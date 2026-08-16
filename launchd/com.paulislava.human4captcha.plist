@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.paulislava.human4captcha</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/local/bin/node</string>
+        <string>/Users/pkondratov/Desktop/Projects/human4captcha/dist/index.js</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/pkondratov/Desktop/Projects/human4captcha</string>
+
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+
+    <key>StandardOutPath</key>
+    <string>/Users/pkondratov/Desktop/Projects/human4captcha/data/service.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/pkondratov/Desktop/Projects/human4captcha/data/service.error.log</string>
+</dict>
+</plist>
