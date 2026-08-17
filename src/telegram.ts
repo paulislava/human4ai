@@ -1,6 +1,12 @@
 import axios from 'axios';
 import { config } from './config';
 
+export interface IncomingPollAnswer {
+  pollId: string;
+  /** Индексы выбранных вариантов; пустой массив — выбор отозвали. */
+  optionIds: number[];
+}
+
 export interface IncomingReply {
   /** message_id сообщения с капчей, на которое ответили. */
   replyToMessageId: number;
@@ -67,6 +73,63 @@ export class TelegramClient {
     return messageId;
   }
 
+  /**
+   * Вопрос человеку с полем ответа. Возвращает message_id — по нему реплай
+   * привязывается к своему вопросу, как и в капче.
+   */
+  async sendQuestion(params: { text: string }): Promise<number> {
+    const response = await axios.post(
+      `${this.apiUrl()}/sendMessage`,
+      {
+        chat_id: config.telegram.chatId,
+        text: params.text,
+        // Ссылку в вопросе не разворачиваем: превью страницы входа бесполезно.
+        disable_web_page_preview: true,
+        reply_markup: { force_reply: true },
+      },
+      { timeout: 30_000 },
+    );
+
+    const messageId = response.data?.result?.message_id;
+    if (typeof messageId !== 'number') {
+      throw new Error('Telegram не вернул message_id');
+    }
+
+    return messageId;
+  }
+
+  /**
+   * Вопрос с вариантами — настоящим опросом Telegram: тыкнуть кнопку с телефона
+   * быстрее и надёжнее, чем набирать текст реплаем.
+   *
+   * Опрос неанонимный: только по таким боту приходят `poll_answer`.
+   */
+  async sendPoll(params: {
+    question: string;
+    options: string[];
+  }): Promise<{ messageId: number; pollId: string }> {
+    const response = await axios.post(
+      `${this.apiUrl()}/sendPoll`,
+      {
+        chat_id: config.telegram.chatId,
+        // У Telegram лимиты: вопрос до 300 символов, вариант до 100, до 10 штук.
+        question: params.question.slice(0, 300),
+        options: params.options.slice(0, 10).map((option) => option.slice(0, 100)),
+        is_anonymous: false,
+        allows_multiple_answers: false,
+      },
+      { timeout: 30_000 },
+    );
+
+    const messageId = response.data?.result?.message_id;
+    const pollId = response.data?.result?.poll?.id;
+    if (typeof messageId !== 'number' || typeof pollId !== 'string') {
+      throw new Error('Telegram не вернул опрос');
+    }
+
+    return { messageId, pollId };
+  }
+
   async sendMessage(text: string): Promise<void> {
     await axios.post(
       `${this.apiUrl()}/sendMessage`,
@@ -79,7 +142,10 @@ export class TelegramClient {
    * Long polling входящих ответов. Держится на одном соединении: у Telegram
    * либо polling, либо webhook — второй потребитель отбирал бы обновления.
    */
-  startPolling(onReply: (reply: IncomingReply) => void): void {
+  startPolling(
+    onReply: (reply: IncomingReply) => void,
+    onPollAnswer?: (answer: IncomingPollAnswer) => void,
+  ): void {
     if (this.polling || !this.isConfigured()) {
       return;
     }
@@ -89,12 +155,27 @@ export class TelegramClient {
       while (this.polling) {
         try {
           const response = await axios.get(`${this.apiUrl()}/getUpdates`, {
-            params: { offset: this.offset, timeout: 30, allowed_updates: ['message'] },
+            params: {
+              offset: this.offset,
+              timeout: 30,
+              // poll_answer нужен для вопросов с вариантами: выбор в опросе
+              // приходит отдельным типом обновления, а не сообщением.
+              allowed_updates: ['message', 'poll_answer'],
+            },
             timeout: 40_000,
           });
 
           for (const update of response.data?.result ?? []) {
             this.offset = update.update_id + 1;
+
+            const pollAnswer = update.poll_answer;
+            if (pollAnswer?.poll_id && onPollAnswer) {
+              onPollAnswer({
+                pollId: pollAnswer.poll_id,
+                optionIds: pollAnswer.option_ids ?? [],
+              });
+              continue;
+            }
 
             const message = update.message;
             const replyTo = message?.reply_to_message?.message_id;

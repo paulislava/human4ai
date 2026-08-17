@@ -51,7 +51,8 @@ interface TaskRow {
  * незакрытый запрос — клиент на другом конце всё ещё ждёт ответа.
  */
 export class TaskStore {
-  private readonly db: Database.Database;
+  /** Соединение отдаётся наружу: на той же базе живут запросы секретов. */
+  readonly db: Database.Database;
 
   constructor(path = config.databasePath) {
     mkdirSync(dirname(path), { recursive: true });
