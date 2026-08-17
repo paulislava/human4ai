@@ -1,8 +1,11 @@
 import express, { NextFunction, Request, Response } from 'express';
 import { config } from './config';
 import { TaskStore } from './db';
-import { AskService, AskStore } from './asks';
+import { AskChannel, AskService, AskStore } from './asks';
 import { CaptchaOrchestrator } from './orchestrator';
+import { createAliceRouter } from './alice';
+import { createMcpRouter } from './mcp';
+import { VoiceService } from './voice/voice.service';
 
 declare module 'express-serve-static-core' {
   interface Request {
@@ -14,6 +17,7 @@ export function createServer(
   store: TaskStore,
   orchestrator: CaptchaOrchestrator,
   asks: { store: AskStore; service: AskService },
+  voice: VoiceService = new VoiceService(),
 ) {
   const app = express();
 
@@ -25,7 +29,74 @@ export function createServer(
       status: 'ok',
       solvers: orchestrator.availableSolvers(),
       asks: asks.service.isAvailable(),
+      voice: asks.service.isAvailable('voice'),
+      voiceQueue: asks.store.voicePending().length,
+      mcp: Boolean(config.mcp.token),
     });
+  });
+
+  // Голосовая половина: вебхук навыка Алисы (свой секрет в пути) и MCP для
+  // сессий Claude Code (свой Bearer-токен). Оба входа сознательно живут вне
+  // /api/*: у них другая авторизация, x-token тут не при чём.
+  app.use(createAliceRouter(asks));
+  app.use(createMcpRouter(asks, voice));
+
+  /** Колонки, которые видно из домашней локалки — для диагностики. */
+  app.get('/api/voice/stations', authenticate, async (_req, res) => {
+    res.json({ stations: await voice.stations() });
+  });
+
+  /** Проверка озвучки: произнести фразу на колонке. */
+  app.post('/api/voice/say', authenticate, async (req: Request, res: Response) => {
+    const { text, station } = req.body ?? {};
+    const result = await voice.speak(
+      typeof text === 'string' && text.trim() ? text : 'Проверка связи',
+      typeof station === 'string' ? station : null,
+    );
+    res.json(result);
+  });
+
+  /** Голосовая очередь: что ждёт ответа и в каком порядке. */
+  app.get('/api/voice/queue', authenticate, (_req, res) => {
+    const now = Date.now();
+    res.json({
+      pending: asks.store.voicePending().map((ask, index) => ({
+        id: ask.id,
+        position: index + 1,
+        client: ask.client,
+        context: ask.context,
+        question: ask.question,
+        waitingSec: Math.round((now - ask.createdAt) / 1000),
+        spoken: Boolean(ask.spokenAt),
+      })),
+    });
+  });
+
+  /** Ответить первому в очереди из терминала — фолбэк, когда Алисы под рукой нет. */
+  app.post('/api/voice/answer', authenticate, (req: Request, res: Response) => {
+    const text = String(req.body?.text ?? '').trim();
+    if (!text) {
+      res.status(400).json({ error: 'Нужен текст ответа (поле text)' });
+      return;
+    }
+
+    const answered = asks.service.answerVoiceHead(text);
+    if (!answered) {
+      res.status(404).json({ error: 'Очередь пуста' });
+      return;
+    }
+
+    res.json({ answered: { id: answered.id, client: answered.client }, next: asks.store.voiceHead() });
+  });
+
+  /** Пропустить первый вопрос: клиент уйдёт в терминальный фолбэк. */
+  app.post('/api/voice/skip', authenticate, (_req, res) => {
+    const skipped = asks.service.skipVoiceHead();
+    if (!skipped) {
+      res.status(404).json({ error: 'Очередь пуста' });
+      return;
+    }
+    res.json({ skipped: { id: skipped.id }, next: asks.store.voiceHead() });
   });
 
   app.use('/api/captcha', authenticate);
@@ -106,8 +177,13 @@ export function createServer(
     const input = parseAskInput(req, res);
     if (!input) return;
 
-    if (!asks.service.isAvailable()) {
-      res.status(503).json({ error: 'Telegram не настроен — спросить некого' });
+    if (!asks.service.isAvailable(input.channel)) {
+      res.status(503).json({
+        error:
+          input.channel === 'voice'
+            ? 'Голосовой канал не настроен — нет токена Яндекса или секрета навыка'
+            : 'Telegram не настроен — спросить некого',
+      });
       return;
     }
 
@@ -123,8 +199,13 @@ export function createServer(
     const input = parseAskInput(req, res);
     if (!input) return;
 
-    if (!asks.service.isAvailable()) {
-      res.status(503).json({ error: 'Telegram не настроен — спросить некого' });
+    if (!asks.service.isAvailable(input.channel)) {
+      res.status(503).json({
+        error:
+          input.channel === 'voice'
+            ? 'Голосовой канал не настроен — нет токена Яндекса или секрета навыка'
+            : 'Telegram не настроен — спросить некого',
+      });
       return;
     }
 
@@ -198,7 +279,16 @@ function authenticate(req: Request, res: Response, next: NextFunction): void {
 }
 
 function parseAskInput(req: Request, res: Response) {
-  const { question, kind, context, link, options, timeout_ms: timeoutMs } = req.body ?? {};
+  const {
+    question,
+    kind,
+    channel,
+    station,
+    context,
+    link,
+    options,
+    timeout_ms: timeoutMs,
+  } = req.body ?? {};
 
   if (typeof question !== 'string' || question.trim().length === 0) {
     res.status(400).json({ error: 'Нужен вопрос (поле question)' });
@@ -207,6 +297,18 @@ function parseAskInput(req: Request, res: Response) {
 
   if (kind !== undefined && !['secret', 'code', 'text'].includes(kind)) {
     res.status(400).json({ error: 'kind: secret | code | text' });
+    return null;
+  }
+
+  if (channel !== undefined && !['telegram', 'voice'].includes(channel)) {
+    res.status(400).json({ error: 'channel: telegram | voice' });
+    return null;
+  }
+
+  // Секрет голосом не спрашивают: колонка проговорит его вслух, а ответ придётся
+  // диктовать в комнату.
+  if (channel === 'voice' && kind !== undefined && kind !== 'text') {
+    res.status(400).json({ error: 'секрет и код голосом не спрашиваются' });
     return null;
   }
 
@@ -223,6 +325,8 @@ function parseAskInput(req: Request, res: Response) {
   return {
     question: question.trim(),
     kind: kind as 'secret' | 'code' | 'text' | undefined,
+    channel: channel as AskChannel | undefined,
+    station: typeof station === 'string' ? station : null,
     context: typeof context === 'string' ? context : null,
     link: typeof link === 'string' ? link : null,
     options: options as string[] | undefined,

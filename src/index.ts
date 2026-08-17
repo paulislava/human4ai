@@ -4,6 +4,7 @@ import { TaskStore } from './db';
 import { CaptchaOrchestrator } from './orchestrator';
 import { createServer } from './server';
 import { TelegramClient } from './telegram';
+import { VoiceService } from './voice/voice.service';
 
 function main(): void {
   const store = new TaskStore();
@@ -12,7 +13,10 @@ function main(): void {
 
   // Запросы секретов живут на той же базе и том же боте, что капча.
   const askStore = new AskStore(store.db);
-  const askService = new AskService(askStore, telegram, config.defaultTimeoutMs);
+  // Голосовой канал: тот же вопрос, но озвучивается на колонке, а ответ приходит
+  // из навыка Алисы.
+  const voice = new VoiceService();
+  const askService = new AskService(askStore, telegram, config.defaultTimeoutMs, voice);
 
   telegram.startPolling(
     ({ replyToMessageId, messageId, text }) => {
@@ -28,14 +32,24 @@ function main(): void {
     },
   );
 
-  const server = createServer(store, orchestrator, {
-    store: askStore,
-    service: askService,
-  }).listen(config.port, () => {
+  const server = createServer(
+    store,
+    orchestrator,
+    { store: askStore, service: askService },
+    voice,
+  ).listen(config.port, () => {
     console.log(`human4ai слушает :${config.port}`);
     console.log(`Доступные решатели: ${orchestrator.availableSolvers().join(', ') || 'нет'}`);
-    console.log(`Запросы секретов: ${askService.isAvailable() ? 'доступны' : 'нет Telegram'}`);
+    console.log(`Вопросы в Telegram: ${askService.isAvailable() ? 'доступны' : 'нет Telegram'}`);
+    console.log(
+      `Вопросы голосом: ${askService.isAvailable('voice') ? 'доступны' : 'нет токена/секрета'}`,
+    );
+    console.log(`MCP: ${config.mcp.token ? '/mcp включён' : 'нет MCP_TOKEN'}`);
   });
+
+  // После рестарта в очереди могли остаться неотвеченные голосовые вопросы:
+  // напоминаем о первом, иначе он молча висел бы до истечения срока.
+  askService.speakHead();
 
   const shutdown = (): void => {
     telegram.stopPolling();

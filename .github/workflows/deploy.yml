@@ -58,6 +58,13 @@ jobs:
           GIGACHAT_MODEL: ${{ secrets.GIGACHAT_MODEL }}
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           DEFAULT_TIMEOUT_MS: ${{ secrets.DEFAULT_TIMEOUT_MS }}
+          VOICE_ALICE_SECRET: ${{ secrets.VOICE_ALICE_SECRET }}
+          VOICE_ALICE_ALLOWED_USERS: ${{ secrets.VOICE_ALICE_ALLOWED_USERS }}
+          VOICE_YANDEX_TOKEN: ${{ secrets.VOICE_YANDEX_TOKEN }}
+          VOICE_PC_PROXY: ${{ secrets.VOICE_PC_PROXY }}
+          VOICE_STATION: ${{ vars.VOICE_STATION }}
+          VOICE_STATION_NAMES: ${{ vars.VOICE_STATION_NAMES }}
+          MCP_TOKEN: ${{ secrets.MCP_TOKEN }}
         run: |
           set -e
 
@@ -90,6 +97,13 @@ jobs:
             -e GIGACHAT_MODEL="$GIGACHAT_MODEL" \
             -e CLAUDE_CODE_OAUTH_TOKEN="$CLAUDE_CODE_OAUTH_TOKEN" \
             -e DEFAULT_TIMEOUT_MS="$DEFAULT_TIMEOUT_MS" \
+            -e VOICE_ALICE_SECRET="$VOICE_ALICE_SECRET" \
+            -e VOICE_ALICE_ALLOWED_USERS="$VOICE_ALICE_ALLOWED_USERS" \
+            -e VOICE_YANDEX_TOKEN="$VOICE_YANDEX_TOKEN" \
+            -e VOICE_PC_PROXY="$VOICE_PC_PROXY" \
+            -e VOICE_STATION="$VOICE_STATION" \
+            -e VOICE_STATION_NAMES="$VOICE_STATION_NAMES" \
+            -e MCP_TOKEN="$MCP_TOKEN" \
             "$IMAGE")
 
           SUCCESS=0

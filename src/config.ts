@@ -42,7 +42,74 @@ export const config = {
 
   /** Сколько ждать ответа человека, если клиент не указал свой таймаут. */
   defaultTimeoutMs: Number(process.env.DEFAULT_TIMEOUT_MS ?? 10 * 60 * 1000),
+
+  /**
+   * Голосовой канал: вопрос произносит Яндекс-Станция, ответ приходит из навыка
+   * Алисы «Ответь коду». Колонки живут только в домашней локальной сети, поэтому
+   * служба ходит к ним через `lan-proxy` на домашнем ПК.
+   */
+  voice: {
+    /** Секрет в пути вебхука Диалогов: /alice/<secret>. Пусто -> канал выключен. */
+    aliceSecret: process.env.VOICE_ALICE_SECRET ?? '',
+    /** Кому разрешён навык: user_id аккаунта и/или application_id устройства. */
+    allowedUsers: (process.env.VOICE_ALICE_ALLOWED_USERS ?? '')
+      .split(',')
+      .map((u) => u.trim())
+      .filter(Boolean),
+    /** OAuth-токен Яндекса со скоупом quasar (тот же, что у проекта assistant). */
+    yandexToken: process.env.VOICE_YANDEX_TOKEN ?? '',
+    /** Колонка по умолчанию: номер, имя или device_id. */
+    station: process.env.VOICE_STATION ?? '',
+    /** Подписи колонок: «device_id:имя, device_id:имя». */
+    stationNames: process.env.VOICE_STATION_NAMES ?? '',
+    /** Статический список станций: «device_id:host:port:platform:имя, …». */
+    stations: process.env.VOICE_STATIONS ?? '',
+    /** Прокси в домашнюю локалку: http://user:pass@host:port. */
+    proxy: parseProxy(process.env.VOICE_PC_PROXY ?? ''),
+  },
+
+  /** MCP-эндпоинт /mcp для сессий Claude Code. Пусто -> выключен. */
+  mcp: {
+    token: process.env.MCP_TOKEN ?? '',
+    /** Максимум ожидания ответа в одном вызове инструмента. */
+    maxWaitMs: Number(process.env.MCP_MAX_WAIT_MS ?? 120_000),
+  },
 };
+
+export interface ProxyConfig {
+  url: string;
+  protocol: 'http' | 'https';
+  host: string;
+  port: number;
+  /** Готовый заголовок Basic — прокси требует его и в CONNECT, и в GET. */
+  authHeader: string | null;
+  /** origin без креденшелов — для обычных GET к самому прокси. */
+  origin: string;
+}
+
+function parseProxy(raw: string): ProxyConfig {
+  if (!raw.trim()) {
+    return { url: '', protocol: 'http', host: '', port: 0, authHeader: null, origin: '' };
+  }
+
+  const parsed = new URL(raw);
+  const protocol = parsed.protocol === 'https:' ? 'https' : 'http';
+  const port = Number(parsed.port) || (protocol === 'https' ? 443 : 3128);
+  const authHeader = parsed.username
+    ? `Basic ${Buffer.from(
+        `${decodeURIComponent(parsed.username)}:${decodeURIComponent(parsed.password)}`,
+      ).toString('base64')}`
+    : null;
+
+  return {
+    url: raw,
+    protocol,
+    host: parsed.hostname,
+    port,
+    authHeader,
+    origin: `${protocol}://${parsed.hostname}:${port}`,
+  };
+}
 
 function parseClientTokens(raw: string): Map<string, string> {
   const tokens = new Map<string, string>();

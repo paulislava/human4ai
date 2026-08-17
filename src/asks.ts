@@ -1,17 +1,25 @@
 import { randomUUID } from 'node:crypto';
 import Database from 'better-sqlite3';
 import { REACTIONS, TelegramClient } from './telegram';
+import { VoiceService } from './voice/voice.service';
 
 /**
  * `secret` и `code` — значения, которые нельзя оставлять на диске:
  * отдаются один раз. `text` — обычный вопрос, ответ читается сколько нужно.
  */
 export type AskKind = 'secret' | 'code' | 'text';
-export type AskStatus = 'pending' | 'answered' | 'timeout' | 'taken';
+export type AskStatus = 'pending' | 'answered' | 'timeout' | 'taken' | 'skipped';
+/**
+ * Куда уходит вопрос: реплаем в Telegram или голосом на Яндекс-Станцию.
+ * Голосовой канал строго FIFO — вслух звучит только первый вопрос очереди,
+ * и ответ Павла достаётся тому, кто спросил раньше.
+ */
+export type AskChannel = 'telegram' | 'voice';
 
 export interface Ask {
   id: string;
   client: string;
+  channel: AskChannel;
   kind: AskKind;
   /** Что именно спрашиваем: «токен от BotFather», «код со страницы входа». */
   question: string;
@@ -27,6 +35,10 @@ export interface Ask {
   /** id опроса, если вопрос отправлен с вариантами. */
   telegramPollId: string | null;
   telegramReplyMessageId: number | null;
+  /** Колонка для голосового вопроса: номер, имя или device_id. */
+  station: string | null;
+  /** Когда вопрос прозвучал — чтобы не проговаривать его дважды. */
+  spokenAt: number | null;
   createdAt: number;
   expiresAt: number;
 }
@@ -34,6 +46,7 @@ export interface Ask {
 interface AskRow {
   id: string;
   client: string;
+  channel: AskChannel | null;
   kind: AskKind;
   question: string;
   context: string | null;
@@ -44,6 +57,8 @@ interface AskRow {
   telegram_message_id: number | null;
   telegram_poll_id: string | null;
   telegram_reply_message_id: number | null;
+  station: string | null;
+  spoken_at: number | null;
   created_at: number;
   expires_at: number;
 }
@@ -79,17 +94,35 @@ export class AskStore {
       CREATE INDEX IF NOT EXISTS idx_asks_tg_message ON asks (telegram_message_id);
       CREATE INDEX IF NOT EXISTS idx_asks_tg_poll ON asks (telegram_poll_id);
     `);
+
+    // Голосовой канал добавлен позже: у базы, созданной прежней версией, этих
+    // колонок нет. Пустой channel читается как 'telegram' (см. toAsk).
+    for (const [column, definition] of [
+      ['channel', 'TEXT'],
+      ['station', 'TEXT'],
+      ['spoken_at', 'INTEGER'],
+    ]) {
+      const exists = (
+        this.db.prepare('SELECT * FROM pragma_table_info(?)').all('asks') as Array<{
+          name: string;
+        }>
+      ).some((c) => c.name === column);
+      if (!exists) this.db.exec(`ALTER TABLE asks ADD COLUMN ${column} ${definition}`);
+    }
+    this.db.exec('CREATE INDEX IF NOT EXISTS idx_asks_channel ON asks (channel, status)');
   }
 
   create(ask: Ask): void {
     this.db
       .prepare(
-        `INSERT INTO asks (id, client, kind, question, context, link, options,
+        `INSERT INTO asks (id, client, channel, kind, question, context, link, options,
                            status, answer, telegram_message_id, telegram_poll_id,
-                           telegram_reply_message_id, created_at, expires_at)
-         VALUES (@id, @client, @kind, @question, @context, @link, @options,
+                           telegram_reply_message_id, station, spoken_at,
+                           created_at, expires_at)
+         VALUES (@id, @client, @channel, @kind, @question, @context, @link, @options,
                  @status, @answer, @telegramMessageId, @telegramPollId,
-                 @telegramReplyMessageId, @createdAt, @expiresAt)`,
+                 @telegramReplyMessageId, @station, @spokenAt,
+                 @createdAt, @expiresAt)`,
       )
       .run({ ...ask, options: JSON.stringify(ask.options) });
   }
@@ -115,6 +148,33 @@ export class AskStore {
     return row ? toAsk(row) : null;
   }
 
+  /**
+   * Первый неотвеченный голосовой вопрос — им и «говорит» очередь.
+   * Просроченные пропускаем: их клиенты уже перестали ждать.
+   */
+  voiceHead(now = Date.now()): Ask | null {
+    const row = this.db
+      .prepare(
+        `SELECT * FROM asks
+          WHERE channel = 'voice' AND status = 'pending' AND expires_at > ?
+          ORDER BY rowid LIMIT 1`,
+      )
+      .get(now) as AskRow | undefined;
+    return row ? toAsk(row) : null;
+  }
+
+  /** Вся голосовая очередь по порядку — для «сколько вопросов» и статуса. */
+  voicePending(now = Date.now()): Ask[] {
+    const rows = this.db
+      .prepare(
+        `SELECT * FROM asks
+          WHERE channel = 'voice' AND status = 'pending' AND expires_at > ?
+          ORDER BY rowid`,
+      )
+      .all(now) as AskRow[];
+    return rows.map(toAsk);
+  }
+
   update(id: string, patch: Partial<Ask>): void {
     const columns: Record<string, string> = {
       status: 'status',
@@ -122,6 +182,8 @@ export class AskStore {
       telegramMessageId: 'telegram_message_id',
       telegramPollId: 'telegram_poll_id',
       telegramReplyMessageId: 'telegram_reply_message_id',
+      station: 'station',
+      spokenAt: 'spoken_at',
       expiresAt: 'expires_at',
     };
 
@@ -165,6 +227,8 @@ function toAsk(row: AskRow): Ask {
   return {
     id: row.id,
     client: row.client,
+    // Записи, созданные до появления голосового канала, — телеграмные.
+    channel: row.channel ?? 'telegram',
     kind: row.kind,
     question: row.question,
     context: row.context,
@@ -175,6 +239,8 @@ function toAsk(row: AskRow): Ask {
     telegramMessageId: row.telegram_message_id,
     telegramPollId: row.telegram_poll_id,
     telegramReplyMessageId: row.telegram_reply_message_id,
+    station: row.station,
+    spokenAt: row.spoken_at,
     createdAt: row.created_at,
     expiresAt: row.expires_at,
   };
@@ -183,10 +249,13 @@ function toAsk(row: AskRow): Ask {
 export interface CreateAskInput {
   client: string;
   question: string;
+  channel?: AskChannel;
   kind?: AskKind;
   context?: string | null;
   link?: string | null;
   options?: string[];
+  /** Колонка для голосового вопроса: номер, имя или device_id. */
+  station?: string | null;
   timeoutMs?: number;
 }
 
@@ -210,10 +279,14 @@ export class AskService {
     private readonly store: AskStore,
     private readonly telegram: TelegramClient,
     private readonly defaultTimeoutMs: number,
+    /** Голосовой канал; без него доступен только Telegram. */
+    private readonly voice?: VoiceService,
   ) {}
 
-  isAvailable(): boolean {
-    return this.telegram.isConfigured();
+  isAvailable(channel: AskChannel = 'telegram'): boolean {
+    return channel === 'voice'
+      ? Boolean(this.voice?.isAvailable())
+      : this.telegram.isConfigured();
   }
 
   create(input: CreateAskInput): Ask {
@@ -221,6 +294,7 @@ export class AskService {
     const ask: Ask = {
       id: `ask_${randomUUID().replace(/-/g, '').slice(0, 20)}`,
       client: input.client,
+      channel: input.channel ?? 'telegram',
       // По умолчанию это обычный вопрос: секретная семантика (одноразовая
       // выдача, стирание с диска) включается явным kind.
       kind: input.kind ?? 'text',
@@ -233,6 +307,8 @@ export class AskService {
       telegramMessageId: null,
       telegramPollId: null,
       telegramReplyMessageId: null,
+      station: input.station ?? null,
+      spokenAt: null,
       createdAt: now,
       expiresAt: now + (input.timeoutMs ?? this.defaultTimeoutMs),
     };
@@ -251,6 +327,8 @@ export class AskService {
       this.store.update(askId, { status: 'timeout' });
       return this.store.get(askId)!;
     }
+
+    if (ask.channel === 'voice') return this.runVoice(ask, remaining);
 
     // Варианты отправляем опросом — ответ одним тапом. Секрет и код в опрос
     // не превратить, да и незачем: их набирают руками.
@@ -286,6 +364,128 @@ export class AskService {
     }
 
     return this.store.get(askId)!;
+  }
+
+  /**
+   * Голосовой вопрос: ждём, пока Павел ответит через навык Алисы.
+   *
+   * Озвучиваем только голову очереди — иначе колонка тараторила бы все вопросы
+   * подряд. Остальные прозвучат, когда до них дойдёт ход (после ответа,
+   * пропуска или истечения предыдущего).
+   */
+  private async runVoice(ask: Ask, remaining: number): Promise<Ask> {
+    this.speakHead();
+
+    const answer = await new Promise<string | null>((resolve) => {
+      const timer = setTimeout(() => {
+        this.waiting.delete(ask.id);
+        resolve(null);
+      }, remaining);
+
+      this.waiting.set(ask.id, { resolve, timer });
+    });
+
+    // Ответ и пропуск проставляют статус сами, синхронно — иначе следующий
+    // ответ успел бы прийти на тот же вопрос, пока этот ход ещё «просыпается».
+    const current = this.store.get(ask.id)!;
+    if (current.status !== 'pending') return current;
+
+    this.store.update(ask.id, { status: 'timeout' });
+    this.speakHead();
+    return this.store.get(ask.id)!;
+  }
+
+  /** Проговорить первый вопрос очереди, если он ещё не звучал. */
+  speakHead(): void {
+    if (!this.voice) return;
+
+    const head = this.store.voiceHead();
+    if (!head || head.spokenAt) return;
+
+    const queueLength = this.store.voicePending().length;
+    // Пометку ставим заранее: пока идёт отправка (сеть, прокси, колонка),
+    // второй вопрос успел бы позвать speakHead и проговорить то же самое.
+    this.store.update(head.id, { spokenAt: Date.now() });
+    void this.voice
+      .speak(
+        this.voice.phrase({
+          question: head.question,
+          client: head.client,
+          context: head.context,
+          options: head.options,
+          queueLength,
+        }),
+        head.station,
+      )
+      .then(({ ok, detail }) => {
+        console.log(`[ask] ${head.id}: озвучен=${ok} (${detail})`);
+        // Не получилось — снимаем пометку, чтобы вопрос можно было проговорить
+        // снова (по «повтори» или когда прокси вернётся).
+        if (!ok) this.store.update(head.id, { spokenAt: null });
+      });
+  }
+
+  /**
+   * Ответ голосом уходит первому вопросу в очереди: у навыка Алисы нет способа
+   * указать, какой именно вопрос имеется в виду, поэтому порядок и решает.
+   * -> закрытый вопрос или null, если очередь пуста.
+   */
+  answerVoiceHead(text: string): Ask | null {
+    const head = this.store.voiceHead();
+    if (!head) return null;
+
+    // Статус ставим сразу: голова очереди должна сдвинуться до того, как
+    // проснётся ожидающий ход — иначе второй ответ уйдёт тому же вопросу.
+    // Если клиент уже не ждёт (перезапустился), ответ всё равно сохранён и
+    // будет забран через GET /api/ask/:id.
+    const answer = this.resolveOption(head, text.trim());
+    this.store.update(head.id, { status: 'answered', answer });
+
+    const pending = this.waiting.get(head.id);
+    if (pending) {
+      clearTimeout(pending.timer);
+      this.waiting.delete(head.id);
+      pending.resolve(answer);
+    }
+
+    console.log(`[ask] ${head.id}: ответ получен голосом`);
+    return this.store.get(head.id);
+  }
+
+  /** «Пропусти»: снимаем голову очереди, клиент уходит в терминальный фолбэк. */
+  skipVoiceHead(): Ask | null {
+    const head = this.store.voiceHead();
+    if (!head) return null;
+
+    this.store.update(head.id, { status: 'skipped' });
+
+    const pending = this.waiting.get(head.id);
+    if (pending) {
+      clearTimeout(pending.timer);
+      this.waiting.delete(head.id);
+      pending.resolve(null);
+    }
+
+    console.log(`[ask] ${head.id}: пропущен голосом`);
+    return this.store.get(head.id);
+  }
+
+  /** Клиент передумал ждать: снять вопрос с очереди. */
+  cancel(askId: string): Ask | null {
+    const ask = this.store.get(askId);
+    if (!ask || ask.status !== 'pending') return null;
+
+    this.store.update(askId, { status: 'timeout' });
+
+    const pending = this.waiting.get(askId);
+    if (pending) {
+      clearTimeout(pending.timer);
+      this.waiting.delete(askId);
+      pending.resolve(null);
+    }
+
+    if (ask.channel === 'voice') this.speakHead();
+    return this.store.get(askId);
   }
 
   /**
