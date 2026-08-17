@@ -13,15 +13,25 @@ export const config = {
   clientTokens: parseClientTokens(process.env.CLIENT_TOKENS ?? ''),
 
   gigachat: {
-    /** OpenAI-совместимый прокси к GigaChat (gpt2giga-proxy). */
+    /**
+     * OpenAI-совместимый прокси к GigaChat (gpt2giga-proxy). Эндпоинты у него
+     * без префикса `/v1` — на `/v1/...` он отвечает 307.
+     */
     baseUrl: process.env.GPT2GIGA_BASE_URL ?? '',
-    model: process.env.GIGACHAT_MODEL ?? 'GigaChat-3-Ultra',
+    /** На корпоративном scope нет 3-Ultra: старшая доступная — 2-Max. */
+    model: process.env.GIGACHAT_MODEL ?? 'GigaChat-2-Max',
     apiKey: process.env.GPT2GIGA_API_KEY ?? '',
   },
 
   claude: {
-    apiKey: process.env.ANTHROPIC_API_KEY ?? '',
+    /**
+     * Ходим через локальный `claude` CLI, а не по API: он уже авторизован,
+     * и отдельный ключ держать не нужно. Пустое значение выключает ступень.
+     */
+    cliPath: process.env.CLAUDE_CLI_PATH ?? '',
     model: process.env.ANTHROPIC_MODEL ?? 'claude-opus-5',
+    /** CLI поднимает агента, поэтому ему нужно больше времени, чем HTTP-вызову. */
+    timeoutMs: Number(process.env.CLAUDE_TIMEOUT_MS ?? 90_000),
   },
 
   telegram: {

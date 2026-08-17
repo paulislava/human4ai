@@ -1,4 +1,5 @@
-import { TelegramClient } from '../telegram';
+import { REACTIONS, TelegramClient } from '../telegram';
+import { normalizeHomoglyphs } from './prompt';
 import { CaptchaSolver, SolveInput } from './types';
 
 /**
@@ -13,7 +14,12 @@ export class HumanSolver implements CaptchaSolver {
   /** taskId → как разбудить ожидающий вызов solve(). */
   private readonly waiting = new Map<
     string,
-    { resolve: (answer: string | null) => void; timer: NodeJS.Timeout }
+    {
+      resolve: (answer: string | null) => void;
+      timer: NodeJS.Timeout;
+      /** Нужна, чтобы понять, можно ли править кириллические двойники. */
+      hint: string | null;
+    }
   >();
 
   /** message_id в Telegram → taskId. */
@@ -39,12 +45,17 @@ export class HumanSolver implements CaptchaSolver {
         resolve(null);
       }, input.timeoutMs);
 
-      this.waiting.set(input.taskId, { resolve, timer });
+      this.waiting.set(input.taskId, { resolve, timer, hint: input.hint });
     });
   }
 
-  /** Вызывается из Telegram-поллера, когда пришёл реплай. */
-  handleReply(messageId: number, text: string): boolean {
+  /**
+   * Вызывается из Telegram-поллера, когда пришёл реплай.
+   *
+   * `replyMessageId` — сообщение самого Павла: на него ставим реакцию, чтобы
+   * он видел, что ответ забрали в работу, и потом — подошёл он или нет.
+   */
+  handleReply(messageId: number, text: string, replyMessageId?: number): boolean {
     const taskId = this.byMessage.get(messageId);
     if (!taskId) {
       return false;
@@ -57,7 +68,13 @@ export class HumanSolver implements CaptchaSolver {
 
     clearTimeout(pending.timer);
     this.forget(taskId, messageId);
-    pending.resolve(text);
+
+    if (replyMessageId !== undefined) {
+      void this.telegram.setReaction(replyMessageId, REACTIONS.taken);
+    }
+    // Человек отвечает с телефона, и русская раскладка даёт «ХК7Р9» вместо
+    // «XK7P9» — на вид одно и то же, а сайт такой ответ не примет.
+    pending.resolve(normalizeHomoglyphs(text.trim(), pending.hint));
     return true;
   }
 

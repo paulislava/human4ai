@@ -1,11 +1,12 @@
 import axios from 'axios';
 import { config } from '../config';
-import { buildPrompt, parseAnswer } from './prompt';
+import { buildPrompt, normalizeHomoglyphs, parseAnswer } from './prompt';
 import { CaptchaSolver, SolveInput } from './types';
 
 /**
  * Первая и самая дешёвая ступень: GigaChat через gpt2giga-proxy
- * (OpenAI-совместимый /v1/chat/completions с image_url).
+ * (OpenAI-совместимый `/chat/completions` с image_url — префикса `/v1` у прокси
+ * нет, на него он отвечает 307).
  */
 export class GigaChatSolver implements CaptchaSolver {
   readonly name = 'gigachat';
@@ -16,7 +17,7 @@ export class GigaChatSolver implements CaptchaSolver {
 
   async solve(input: SolveInput): Promise<string | null> {
     const response = await axios.post(
-      `${config.gigachat.baseUrl.replace(/\/$/, '')}/v1/chat/completions`,
+      `${config.gigachat.baseUrl.replace(/\/$/, '')}/chat/completions`,
       {
         model: config.gigachat.model,
         temperature: 0,
@@ -41,6 +42,7 @@ export class GigaChatSolver implements CaptchaSolver {
       },
     );
 
-    return parseAnswer(response.data?.choices?.[0]?.message?.content);
+    const answer = parseAnswer(response.data?.choices?.[0]?.message?.content);
+    return answer && normalizeHomoglyphs(answer, input.hint);
   }
 }

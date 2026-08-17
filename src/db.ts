@@ -23,6 +23,8 @@ export interface CaptchaTask {
   answeredBy: string | null;
   /** message_id сообщения в Telegram — по нему матчится реплай. */
   telegramMessageId: number | null;
+  /** Сообщение Павла с ответом: на нём живёт реакция-статус. */
+  telegramReplyMessageId: number | null;
   createdAt: number;
   expiresAt: number;
 }
@@ -39,6 +41,7 @@ interface TaskRow {
   answer: string | null;
   answered_by: string | null;
   telegram_message_id: number | null;
+  telegram_reply_message_id: number | null;
   created_at: number;
   expires_at: number;
 }
@@ -71,6 +74,7 @@ export class TaskStore {
         answer TEXT,
         answered_by TEXT,
         telegram_message_id INTEGER,
+        telegram_reply_message_id INTEGER,
         created_at INTEGER NOT NULL,
         expires_at INTEGER NOT NULL
       );
@@ -93,6 +97,16 @@ export class TaskStore {
 
       CREATE INDEX IF NOT EXISTS idx_attempts_task ON attempts (task_id);
     `);
+
+    // База уже могла быть создана до появления колонки: CREATE TABLE IF NOT
+    // EXISTS её не добавит, поэтому доливаем отдельно.
+    const columns = this.db
+      .prepare('PRAGMA table_info(tasks)')
+      .all() as Array<{ name: string }>;
+
+    if (!columns.some((column) => column.name === 'telegram_reply_message_id')) {
+      this.db.exec('ALTER TABLE tasks ADD COLUMN telegram_reply_message_id INTEGER');
+    }
   }
 
   create(task: CaptchaTask): void {
@@ -100,10 +114,10 @@ export class TaskStore {
       .prepare(
         `INSERT INTO tasks (id, client, status, image, hint, context, solvers,
                             solver_index, answer, answered_by, telegram_message_id,
-                            created_at, expires_at)
+                            telegram_reply_message_id, created_at, expires_at)
          VALUES (@id, @client, @status, @image, @hint, @context, @solvers,
                  @solverIndex, @answer, @answeredBy, @telegramMessageId,
-                 @createdAt, @expiresAt)`,
+                 @telegramReplyMessageId, @createdAt, @expiresAt)`,
       )
       .run({ ...task, solvers: JSON.stringify(task.solvers) });
   }
@@ -136,6 +150,7 @@ export class TaskStore {
       answer: 'answer',
       answeredBy: 'answered_by',
       telegramMessageId: 'telegram_message_id',
+      telegramReplyMessageId: 'telegram_reply_message_id',
       createdAt: 'created_at',
       expiresAt: 'expires_at',
     };
@@ -217,6 +232,7 @@ export class TaskStore {
       answer: row.answer,
       answeredBy: row.answered_by,
       telegramMessageId: row.telegram_message_id,
+      telegramReplyMessageId: row.telegram_reply_message_id,
       createdAt: row.created_at,
       expiresAt: row.expires_at,
     };

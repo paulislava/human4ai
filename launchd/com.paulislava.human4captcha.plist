@@ -5,14 +5,25 @@
     <key>Label</key>
     <string>com.paulislava.human4captcha</string>
 
+    <!-- Тот же Node, что в разработке (nvm v22): нативный биндинг
+         better-sqlite3 собран под него, и на Node из Homebrew (v26) служба
+         падает с ERR_DLOPEN_FAILED. При смене версии nvm путь надо обновить
+         и пересобрать модуль: npm rebuild better-sqlite3. -->
     <key>ProgramArguments</key>
     <array>
-        <string>/usr/local/bin/node</string>
+        <string>/Users/pkondratov/.nvm/versions/node/v22.22.0/bin/node</string>
         <string>/Users/pkondratov/Desktop/Projects/human4captcha/dist/index.js</string>
     </array>
 
     <key>WorkingDirectory</key>
     <string>/Users/pkondratov/Desktop/Projects/human4captcha</string>
+
+    <!-- Ступень Claude запускает CLI, а он ищет по PATH свои зависимости. -->
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/Users/pkondratov/.nvm/versions/node/v22.22.0/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    </dict>
 
     <key>RunAtLoad</key>
     <true/>

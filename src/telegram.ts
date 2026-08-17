@@ -4,8 +4,23 @@ import { config } from './config';
 export interface IncomingReply {
   /** message_id сообщения с капчей, на которое ответили. */
   replyToMessageId: number;
+  /** message_id самого ответа: на нём живёт реакция-статус. */
+  messageId: number;
   text: string;
 }
+
+/**
+ * Реакции-статусы на ответ человека. Telegram принимает не любую эмодзи, а
+ * только из своего набора, поэтому «галочки» и «крестика» здесь нет.
+ */
+export const REACTIONS = {
+  /** Ответ забрали в работу. */
+  taken: '\u{1F440}',
+  /** Ответ подошёл. */
+  accepted: '\u{1F44D}',
+  /** Ответ не подошёл — сайт его отклонил. */
+  rejected: '\u{1F44E}',
+} as const;
 
 /**
  * Клиент Telegram-бота: отправка капчи и приём ответов.
@@ -86,7 +101,11 @@ export class TelegramClient {
             const text: string | undefined = message?.text;
 
             if (typeof replyTo === 'number' && text) {
-              onReply({ replyToMessageId: replyTo, text: text.trim() });
+              onReply({
+                replyToMessageId: replyTo,
+                messageId: message.message_id,
+                text: text.trim(),
+              });
             }
           }
         } catch (error) {
@@ -103,6 +122,31 @@ export class TelegramClient {
 
   stopPolling(): void {
     this.polling = false;
+  }
+
+  /**
+   * Ставит единственную реакцию на сообщение — так статус ответа виден прямо в
+   * переписке, без дополнительных сообщений от бота. `null` снимает реакцию.
+   *
+   * Ошибку глотаем: реакция — это индикатор, а не часть протокола. Если
+   * Telegram её не принял, задача всё равно должна дорешаться.
+   */
+  async setReaction(messageId: number, emoji: string | null): Promise<void> {
+    if (!this.isConfigured()) return;
+
+    try {
+      await axios.post(
+        `${this.apiUrl()}/setMessageReaction`,
+        {
+          chat_id: config.telegram.chatId,
+          message_id: messageId,
+          reaction: emoji ? [{ type: 'emoji', emoji }] : [],
+        },
+        { timeout: 15_000 },
+      );
+    } catch (error) {
+      console.error('Telegram setMessageReaction:', (error as Error).message);
+    }
   }
 
   private apiUrl(): string {

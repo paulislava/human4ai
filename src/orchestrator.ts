@@ -5,7 +5,7 @@ import { ClaudeSolver } from './solvers/claude.solver';
 import { GigaChatSolver } from './solvers/gigachat.solver';
 import { HumanSolver } from './solvers/human.solver';
 import { CaptchaSolver } from './solvers/types';
-import { TelegramClient } from './telegram';
+import { REACTIONS, TelegramClient } from './telegram';
 
 export interface CreateTaskInput {
   client: string;
@@ -31,7 +31,7 @@ export class CaptchaOrchestrator {
 
   constructor(
     private readonly store: TaskStore,
-    telegram: TelegramClient,
+    private readonly telegram: TelegramClient,
   ) {
     this.human = new HumanSolver(telegram);
     this.solvers = new Map<string, CaptchaSolver>(
@@ -68,6 +68,7 @@ export class CaptchaOrchestrator {
       answer: null,
       answeredBy: null,
       telegramMessageId: null,
+      telegramReplyMessageId: null,
       createdAt: now,
       expiresAt: now + timeoutMs,
     };
@@ -117,6 +118,10 @@ export class CaptchaOrchestrator {
             answer,
             answeredBy: solver.name,
           });
+          // Ответ человека ушёл клиенту как решение — помечаем в переписке.
+          // Если сайт его потом отклонит, клиент вызовет reject и реакция
+          // сменится на «не подошёл».
+          this.reactToHumanAnswer(taskId, REACTIONS.accepted);
           this.store.logAttempt({
             taskId,
             solver: solver.name,
@@ -173,6 +178,8 @@ export class CaptchaOrchestrator {
       answer: task.answer,
     });
 
+    this.reactToHumanAnswer(taskId, REACTIONS.rejected);
+
     this.human.cancel(taskId);
 
     this.store.update(taskId, {
@@ -186,12 +193,28 @@ export class CaptchaOrchestrator {
   }
 
   /** Реплай из Telegram: находим задачу по сообщению и отдаём ответ ожидающему. */
-  handleTelegramReply(messageId: number, text: string): void {
+  handleTelegramReply(messageId: number, text: string, replyMessageId?: number): void {
     const taskId = this.human.taskIdForMessage(messageId);
     if (taskId) {
-      this.store.update(taskId, { telegramMessageId: messageId });
+      this.store.update(taskId, {
+        telegramMessageId: messageId,
+        telegramReplyMessageId: replyMessageId ?? null,
+      });
     }
-    this.human.handleReply(messageId, text);
+    this.human.handleReply(messageId, text, replyMessageId);
+  }
+
+  /**
+   * Меняет реакцию на сообщении Павла с ответом.
+   *
+   * Молча выходим, если отвечал не человек: у моделей сообщения в Telegram нет,
+   * и реакцию ставить некуда.
+   */
+  private reactToHumanAnswer(taskId: string, emoji: string): void {
+    const replyMessageId = this.store.get(taskId)?.telegramReplyMessageId;
+    if (replyMessageId) {
+      void this.telegram.setReaction(replyMessageId, emoji);
+    }
   }
 
   /** Список доступных ступеней — для /health и диагностики конфигурации. */

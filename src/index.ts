@@ -9,8 +9,8 @@ function main(): void {
   const telegram = new TelegramClient();
   const orchestrator = new CaptchaOrchestrator(store, telegram);
 
-  telegram.startPolling(({ replyToMessageId, text }) => {
-    orchestrator.handleTelegramReply(replyToMessageId, text);
+  telegram.startPolling(({ replyToMessageId, messageId, text }) => {
+    orchestrator.handleTelegramReply(replyToMessageId, text, messageId);
   });
 
   const server = createServer(store, orchestrator).listen(config.port, () => {

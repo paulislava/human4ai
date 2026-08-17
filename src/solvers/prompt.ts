@@ -35,3 +35,27 @@ export function parseAnswer(raw: string | null | undefined): string | null {
   // Длинный ответ — это почти наверняка рассуждение, а не капча.
   return cleaned.length <= 32 ? cleaned : null;
 }
+
+/**
+ * Кириллические двойники латинских букв. Человек, отвечающий с русской
+ * раскладки, набирает «ХК7Р9» вместо «XK7P9» — на вид не отличить, а сайт такой
+ * ответ отбивает. Модели ошибаются так же, когда капча латиницей.
+ */
+const HOMOGLYPHS: Record<string, string> = {
+  А: 'A', В: 'B', Е: 'E', К: 'K', М: 'M', Н: 'H', О: 'O',
+  Р: 'P', С: 'C', Т: 'T', У: 'Y', Х: 'X',
+  а: 'a', е: 'e', о: 'o', р: 'p', с: 'c', у: 'y', х: 'x',
+  б: '6', З: '3',
+};
+
+/**
+ * Приводит кириллические двойники к латинице — но только когда подсказка прямо
+ * говорит, что капча латиницей. Иначе честно кириллическую капчу мы бы испортили.
+ */
+export function normalizeHomoglyphs(answer: string, hint: string | null): string {
+  if (!hint || !/латин|latin/i.test(hint)) {
+    return answer;
+  }
+
+  return [...answer].map((char) => HOMOGLYPHS[char] ?? char).join('');
+}
