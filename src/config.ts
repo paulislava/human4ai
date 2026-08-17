@@ -66,6 +66,12 @@ export const config = {
     stations: process.env.VOICE_STATIONS ?? '',
     /** Прокси в домашнюю локалку: http://user:pass@host:port. */
     proxy: parseProxy(process.env.VOICE_PC_PROXY ?? ''),
+    /**
+     * Сколько голосовой вопрос ждёт ответа, если клиент не задал свой таймаут.
+     * Сутки, а не 10 минут как в Telegram: Павел может подойти к колонке когда
+     * угодно, а сессия всё это время дожимает ответ через wait_answer.
+     */
+    ttlMs: Number(process.env.VOICE_TTL_MS ?? 24 * 60 * 60 * 1000),
   },
 
   /** MCP-эндпоинт /mcp для сессий Claude Code. Пусто -> выключен. */

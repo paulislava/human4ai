@@ -138,9 +138,22 @@ describe('голосовой канал', () => {
   });
 
   it('истёкшие вопросы не держат очередь', () => {
-    const setup = makeSetup(-1);
-    setup.service.create({ client: 'alpha', channel: 'voice', question: 'устарел?' });
+    const setup = makeSetup();
+    // Срок задаём явно: голосовой вопрос по умолчанию живёт сутки, а не
+    // defaultTimeoutMs — он ждёт, пока Павел подойдёт к колонке.
+    setup.service.create({
+      client: 'alpha',
+      channel: 'voice',
+      question: 'устарел?',
+      timeoutMs: -1,
+    });
     expect(setup.store.voiceHead()).toBeNull();
+  });
+
+  it('по умолчанию голосовой вопрос живёт сутки', () => {
+    const setup = makeSetup(60_000);
+    const ask = setup.service.create({ client: 'alpha', channel: 'voice', question: 'долгий?' });
+    expect(ask.expiresAt - ask.createdAt).toBe(24 * 60 * 60 * 1000);
   });
 });
 

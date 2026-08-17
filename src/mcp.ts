@@ -55,8 +55,16 @@ const TOOLS = [
           description: 'Кто спрашивает (звучит в вопросе): проект, задача.',
         },
         station: { type: 'string', description: 'Колонка: номер, имя или device_id.' },
-        wait: { type: 'number', description: 'Сколько секунд ждать ответ в этом вызове.' },
-        timeout: { type: 'number', description: 'Сколько всего секунд вопрос ждёт ответа.' },
+        wait: {
+          type: 'number',
+          description:
+            'Сколько секунд ждать ответ в этом вызове (не дольше лимита сервера). ' +
+            'Если вернулся pending — дожимай вызовами wait_answer.',
+        },
+        timeout: {
+          type: 'number',
+          description: 'Сколько всего секунд вопрос ждёт ответа. Голосом по умолчанию сутки.',
+        },
       },
       required: ['question'],
     },
@@ -64,7 +72,12 @@ const TOOLS = [
   {
     name: 'wait_answer',
     title: 'Дождаться ответа',
-    description: 'Продолжить ожидание ответа, если ask_user вернул status=pending.',
+    description:
+      'Продолжить ожидание ответа, если ask_user вернул status=pending. ' +
+      'Один вызов ждёт не дольше своего лимита и может снова вернуть pending — ' +
+      'тогда вызывай wait_answer заново, столько раз сколько нужно: голосовой ' +
+      'вопрос живёт сутки и ждёт, пока Павел подойдёт к колонке. Прекращай ' +
+      'только на answered (есть ответ), skipped («пропусти») или timeout.',
     inputSchema: {
       type: 'object',
       properties: {

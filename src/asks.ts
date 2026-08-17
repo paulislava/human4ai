@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import Database from 'better-sqlite3';
+import { config } from './config';
 import { REACTIONS, TelegramClient } from './telegram';
 import { VoiceService } from './voice/voice.service';
 
@@ -310,7 +311,11 @@ export class AskService {
       station: input.station ?? null,
       spokenAt: null,
       createdAt: now,
-      expiresAt: now + (input.timeoutMs ?? this.defaultTimeoutMs),
+      expiresAt:
+        now +
+        (input.timeoutMs ??
+          // Голосовой вопрос ждёт долго: Павел подойдёт к колонке когда сможет.
+          (input.channel === 'voice' ? config.voice.ttlMs : this.defaultTimeoutMs)),
     };
 
     this.store.create(ask);
