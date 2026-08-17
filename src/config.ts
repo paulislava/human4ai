@@ -7,7 +7,7 @@ export const config = {
   port: Number(process.env.PORT ?? 3200),
 
   /** Файл SQLite: задачи переживают рестарт службы. */
-  databasePath: process.env.DATABASE_PATH ?? './data/human4captcha.sqlite',
+  databasePath: process.env.DATABASE_PATH ?? './data/human4ai.sqlite',
 
   /** Токены клиентов: «token:имя,token:имя». Имя видно в логах — понятно, кто спрашивает. */
   clientTokens: parseClientTokens(process.env.CLIENT_TOKENS ?? ''),

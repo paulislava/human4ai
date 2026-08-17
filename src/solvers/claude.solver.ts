@@ -24,7 +24,7 @@ export class ClaudeSolver implements CaptchaSolver {
   async solve(input: SolveInput): Promise<string | null> {
     // Каталог свой на каждую задачу: параллельные капчи не должны видеть
     // картинки друг друга, а CLI получает доступ только к нему.
-    const dir = await mkdtemp(join(tmpdir(), 'human4captcha-'));
+    const dir = await mkdtemp(join(tmpdir(), 'human4ai-'));
     const imagePath = join(dir, `${input.taskId}.png`);
 
     try {

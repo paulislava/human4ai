@@ -1,4 +1,4 @@
-name: human4captcha
+name: human4ai
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -11,7 +11,7 @@ on:
   workflow_dispatch:
 
 jobs:
-  # ── Тесты: гоняются и на PR, и перед деплоем ──────────────
+  # ── Тесты: на бесплатном раннере GitHub, серверу для этого напрягаться незачем ──
   test:
     name: Tests
     runs-on: ubuntu-latest
@@ -31,57 +31,26 @@ jobs:
       - name: Тесты
         run: npm test
 
-  # ── Сборка образа ────────────────────────────────────────
-  build:
-    name: Build & Push
-    runs-on: ubuntu-latest
+  # ── Сборка и деплой прямо на сервере ─────────────────────
+  # Раннер живёт на том же сервере, поэтому образ не гоняется через реестр:
+  # собрали локально и сразу подменили контейнер. SSH-ключ для этого не нужен.
+  deploy:
+    name: Build & Deploy
+    runs-on: [self-hosted, paulislava]
     needs: test
-    if: github.event_name != 'pull_request'
-    permissions:
-      contents: read
-      packages: write
-    outputs:
-      image: ${{ steps.image.outputs.name }}
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    env:
+      IMAGE: human4ai:${{ github.sha }}
+      PORT: 4020
 
     steps:
       - uses: actions/checkout@v4
 
-      - name: Вход в GHCR
-        uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Сборка образа
+        run: docker build -t "$IMAGE" .
 
-      - name: Имя образа
-        id: image
-        run: |
-          OWNER=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
-          echo "name=ghcr.io/${OWNER}/human4captcha:${{ github.sha }}" >> $GITHUB_OUTPUT
-
-      - uses: docker/setup-buildx-action@v3
-
-      - name: Сборка и публикация
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          push: true
-          tags: ${{ steps.image.outputs.name }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-
-  # ── Деплой на сервер ─────────────────────────────────────
-  deploy:
-    name: Deploy
-    runs-on: ubuntu-latest
-    needs: build
-    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
-
-    steps:
-      - name: Деплой по SSH
-        uses: appleboy/ssh-action@v1
+      - name: Подмена контейнера
         env:
-          IMAGE: ${{ needs.build.outputs.image }}
           CLIENT_TOKENS: ${{ secrets.CLIENT_TOKENS }}
           TELEGRAM_CAPTCHA_BOT_TOKEN: ${{ secrets.TELEGRAM_CAPTCHA_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
@@ -89,75 +58,62 @@ jobs:
           GIGACHAT_MODEL: ${{ secrets.GIGACHAT_MODEL }}
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           DEFAULT_TIMEOUT_MS: ${{ secrets.DEFAULT_TIMEOUT_MS }}
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GH_ACTOR: ${{ github.actor }}
-        with:
-          host: ${{ secrets.SSH_HOST }}
-          username: ${{ secrets.SSH_USER }}
-          key: ${{ secrets.SSH_KEY }}
-          envs: IMAGE,CLIENT_TOKENS,TELEGRAM_CAPTCHA_BOT_TOKEN,TELEGRAM_CHAT_ID,GPT2GIGA_BASE_URL,GIGACHAT_MODEL,CLAUDE_CODE_OAUTH_TOKEN,DEFAULT_TIMEOUT_MS,GH_TOKEN,GH_ACTOR
-          script: |
-            set -e
-            echo "$GH_TOKEN" | docker login ghcr.io -u "$GH_ACTOR" --password-stdin
-            docker pull "$IMAGE"
+        run: |
+          set -e
 
-            # Том с базой задач переживает пересоздание контейнера: иначе
-            # деплой терял бы незакрытые запросы капчи.
-            docker volume create human4captcha-data >/dev/null
+          # База задач и конфигурация Claude — в томах: они не часть образа и
+          # переживают деплой.
+          docker volume create human4ai-data >/dev/null
+          docker volume create human4ai-claude-home >/dev/null
 
-            # Конфигурация Claude Code (settings с прокси, MCP, плагины, скиллы,
-            # сессии) лежит в отдельном томе: она не часть образа и переживает
-            # деплой. Наполняется вручную — см. README.
-            docker volume create h4c-claude-home >/dev/null
+          # Общая сеть с gpt2giga-proxy: ступень GigaChat обращается к нему по
+          # имени контейнера, а не через порт на хосте.
+          docker network create human4ai >/dev/null 2>&1 || true
 
-            # Общая сеть со gpt2giga-proxy: ступень GigaChat обращается к нему
-            # по имени контейнера, а не через порт на хосте.
-            docker network create h4c >/dev/null 2>&1 || true
+          # Старый контейнер держим до успешного health-check — иначе неудачный
+          # деплой оставил бы службу лежать.
+          OLD_ID=$(docker ps -q --filter "publish=$PORT")
+          if [ -n "$OLD_ID" ]; then
+            docker stop "$OLD_ID"
+          fi
 
-            # Старый контейнер держим до успешного health-check —
-            # иначе неудачный деплой оставил бы службу лежать.
-            OLD_ID=$(docker ps -q --filter "publish=4020")
-            if [ -n "$OLD_ID" ]; then
-              docker stop "$OLD_ID"
+          NEW_ID=$(docker run -d --restart unless-stopped \
+            --add-host=host.docker.internal:host-gateway \
+            --network human4ai \
+            -p "$PORT:3200" \
+            -v human4ai-data:/data \
+            -v human4ai-claude-home:/root/.claude \
+            -e CLIENT_TOKENS="$CLIENT_TOKENS" \
+            -e TELEGRAM_CAPTCHA_BOT_TOKEN="$TELEGRAM_CAPTCHA_BOT_TOKEN" \
+            -e TELEGRAM_CHAT_ID="$TELEGRAM_CHAT_ID" \
+            -e GPT2GIGA_BASE_URL="$GPT2GIGA_BASE_URL" \
+            -e GIGACHAT_MODEL="$GIGACHAT_MODEL" \
+            -e CLAUDE_CODE_OAUTH_TOKEN="$CLAUDE_CODE_OAUTH_TOKEN" \
+            -e DEFAULT_TIMEOUT_MS="$DEFAULT_TIMEOUT_MS" \
+            "$IMAGE")
+
+          SUCCESS=0
+          for i in $(seq 1 10); do
+            STATUS=$(curl -s -o /dev/null -w "%{http_code}" "http://localhost:$PORT/api/health" || echo "000")
+            if [ "$STATUS" = "200" ]; then
+              echo "Health check пройден"
+              SUCCESS=1
+              break
             fi
+            echo "Попытка $i: статус $STATUS, жду 3 с..."
+            sleep 3
+          done
 
-            NEW_ID=$(docker run -d --restart unless-stopped \
-              --add-host=host.docker.internal:host-gateway \
-              --network h4c \
-              -p 4020:3200 \
-              -v human4captcha-data:/data \
-              -v h4c-claude-home:/root/.claude \
-              -e CLIENT_TOKENS="$CLIENT_TOKENS" \
-              -e TELEGRAM_CAPTCHA_BOT_TOKEN="$TELEGRAM_CAPTCHA_BOT_TOKEN" \
-              -e TELEGRAM_CHAT_ID="$TELEGRAM_CHAT_ID" \
-              -e GPT2GIGA_BASE_URL="$GPT2GIGA_BASE_URL" \
-              -e GIGACHAT_MODEL="$GIGACHAT_MODEL" \
-              -e CLAUDE_CODE_OAUTH_TOKEN="$CLAUDE_CODE_OAUTH_TOKEN" \
-              -e DEFAULT_TIMEOUT_MS="$DEFAULT_TIMEOUT_MS" \
-              "$IMAGE")
-
-            SUCCESS=0
-            for i in $(seq 1 10); do
-              STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:4020/api/health || echo "000")
-              if [ "$STATUS" = "200" ]; then
-                echo "Health check пройден"
-                SUCCESS=1
-                break
-              fi
-              echo "Попытка $i: статус $STATUS, жду 3 с..."
-              sleep 3
-            done
-
-            if [ "$SUCCESS" = "1" ]; then
-              # Ступени печатаются в лог на старте — сразу видно, что подключено.
-              docker logs "$NEW_ID" 2>&1 | tail -3
-              [ -n "$OLD_ID" ] && docker rm "$OLD_ID"
-              docker image prune -f --filter "until=168h" || true
-            else
-              echo "Health check не прошёл — откатываюсь"
-              docker logs "$NEW_ID" || true
-              docker stop "$NEW_ID" || true
-              docker rm "$NEW_ID" || true
-              [ -n "$OLD_ID" ] && docker start "$OLD_ID"
-              exit 1
-            fi
+          if [ "$SUCCESS" = "1" ]; then
+            # Ступени печатаются в лог на старте — сразу видно, что подключено.
+            docker logs "$NEW_ID" 2>&1 | tail -3
+            [ -n "$OLD_ID" ] && docker rm "$OLD_ID"
+            docker image prune -f --filter "until=168h" || true
+          else
+            echo "Health check не прошёл — откатываюсь"
+            docker logs "$NEW_ID" || true
+            docker stop "$NEW_ID" || true
+            docker rm "$NEW_ID" || true
+            [ -n "$OLD_ID" ] && docker start "$OLD_ID"
+            exit 1
+          fi

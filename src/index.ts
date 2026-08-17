@@ -32,7 +32,7 @@ function main(): void {
     store: askStore,
     service: askService,
   }).listen(config.port, () => {
-    console.log(`human4captcha слушает :${config.port}`);
+    console.log(`human4ai слушает :${config.port}`);
     console.log(`Доступные решатели: ${orchestrator.availableSolvers().join(', ') || 'нет'}`);
     console.log(`Запросы секретов: ${askService.isAvailable() ? 'доступны' : 'нет Telegram'}`);
   });

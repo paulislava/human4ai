@@ -30,7 +30,7 @@ COPY --from=build /app/package*.json ./
 
 # База задач лежит в томе: рестарт и переезд на новый образ не должны терять
 # незакрытые запросы — ровно для этого она и на диске, а не в памяти.
-ENV DATABASE_PATH=/data/human4captcha.sqlite
+ENV DATABASE_PATH=/data/human4ai.sqlite
 VOLUME ["/data"]
 
 # Порт внутри контейнера фиксированный; наружу его пробрасывает деплой.
