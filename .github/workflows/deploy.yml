@@ -57,6 +57,8 @@ jobs:
           GPT2GIGA_BASE_URL: ${{ secrets.GPT2GIGA_BASE_URL }}
           GIGACHAT_MODEL: ${{ secrets.GIGACHAT_MODEL }}
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          CLAUDE_SHIM_URL: ${{ secrets.CLAUDE_SHIM_URL }}
+          CLAUDE_SHIM_TOKEN: ${{ secrets.CLAUDE_SHIM_TOKEN }}
           DEFAULT_TIMEOUT_MS: ${{ secrets.DEFAULT_TIMEOUT_MS }}
           VOICE_ALICE_SECRET: ${{ secrets.VOICE_ALICE_SECRET }}
           VOICE_ALICE_ALLOWED_USERS: ${{ secrets.VOICE_ALICE_ALLOWED_USERS }}
@@ -68,10 +70,8 @@ jobs:
         run: |
           set -e
 
-          # База задач и конфигурация Claude — в томах: они не часть образа и
-          # переживают деплой.
+          # База задач — в томе: она не часть образа и переживает деплой.
           docker volume create human4ai-data >/dev/null
-          docker volume create human4ai-claude-home >/dev/null
 
           # Общая сеть с gpt2giga-proxy: ступень GigaChat обращается к нему по
           # имени контейнера, а не через порт на хосте.
@@ -89,14 +89,14 @@ jobs:
             --network human4ai \
             -p "$PORT:3200" \
             -v human4ai-data:/data \
-            -v human4ai-claude-home:/root/.claude \
             -e CLIENT_TOKENS="$CLIENT_TOKENS" \
             -e TELEGRAM_CAPTCHA_BOT_TOKEN="$TELEGRAM_CAPTCHA_BOT_TOKEN" \
             -e TELEGRAM_CHAT_ID="$TELEGRAM_CHAT_ID" \
             -e GPT2GIGA_BASE_URL="$GPT2GIGA_BASE_URL" \
             -e GIGACHAT_MODEL="$GIGACHAT_MODEL" \
             -e CLAUDE_CODE_OAUTH_TOKEN="$CLAUDE_CODE_OAUTH_TOKEN" \
-            -e IS_SANDBOX=1 \
+            -e CLAUDE_SHIM_URL="$CLAUDE_SHIM_URL" \
+            -e CLAUDE_SHIM_TOKEN="$CLAUDE_SHIM_TOKEN" \
             -e DEFAULT_TIMEOUT_MS="$DEFAULT_TIMEOUT_MS" \
             -e VOICE_ALICE_SECRET="$VOICE_ALICE_SECRET" \
             -e VOICE_ALICE_ALLOWED_USERS="$VOICE_ALICE_ALLOWED_USERS" \

@@ -33,11 +33,18 @@ export const config = {
     /** CLI поднимает агента, поэтому ему нужно больше времени, чем HTTP-вызову. */
     timeoutMs: Number(process.env.CLAUDE_TIMEOUT_MS ?? 90_000),
     /**
-     * Токен авторизации CLI (`claude setup-token`). Без него CLI отвечает
-     * «Not logged in», поэтому ступень считается недоступной и каскад её
-     * пропускает, а не тратит на неё таймаут.
+     * Токен авторизации CLI (`claude setup-token`) — только для локального
+     * запуска. Без него CLI отвечает «Not logged in», поэтому ступень считается
+     * недоступной и каскад её пропускает, а не тратит на неё таймаут.
      */
     oauthToken: process.env.CLAUDE_CODE_OAUTH_TOKEN ?? '',
+    /**
+     * Шим на хосте: служба живёт в контейнере, а CLI авторизован на хосте —
+     * туда и ходим, вместо того чтобы тащить авторизацию внутрь образа.
+     * Пусто -> запускаем CLI сами (локальная разработка).
+     */
+    shimUrl: process.env.CLAUDE_SHIM_URL ?? '',
+    shimToken: process.env.CLAUDE_SHIM_TOKEN ?? '',
   },
 
   telegram: {

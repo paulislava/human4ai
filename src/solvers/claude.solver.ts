@@ -10,16 +10,23 @@ import { CaptchaSolver, SolveInput } from './types';
  * Вторая ступень: Claude. Дороже GigaChat, но заметно лучше читает искажённый
  * текст — вызывается только когда первая ступень не справилась.
  *
- * Ходим не по API, а через локальный `claude` CLI: у Павла он уже авторизован,
- * так что отдельный `ANTHROPIC_API_KEY` держать и продлевать не нужно.
- * Картинка передаётся файлом — CLI читает её сам инструментом Read.
+ * Ходим не по API, а через `claude` CLI: он уже авторизован, так что отдельный
+ * `ANTHROPIC_API_KEY` держать и продлевать не нужно. Картинка передаётся
+ * файлом — CLI читает её сам инструментом Read.
+ *
+ * На сервере CLI живёт **на хосте**, а служба в контейнере: внутрь образа
+ * авторизацию не тащим (там root, чужой профиль и вечный токен), а просим хост
+ * выполнить один вызов через `hostshim/claude-shim.mjs`. Локально, когда шим не
+ * задан, CLI запускается напрямую.
  */
 export class ClaudeSolver implements CaptchaSolver {
   readonly name = 'claude';
 
   isAvailable(): boolean {
-    // Пустой токен — это не «ступень сломалась», а «её нет»: CLI без
-    // авторизации отвечает «Not logged in», и ждать от него нечего.
+    // Либо есть шим на хосте, либо локальный CLI с токеном. Пустая авторизация
+    // — это не «ступень сломалась», а «её нет»: CLI без неё отвечает
+    // «Not logged in», и ждать от него нечего.
+    if (config.claude.shimUrl && config.claude.shimToken) return true;
     return Boolean(config.claude.cliPath && config.claude.oauthToken);
   }
 
@@ -31,12 +38,15 @@ export class ClaudeSolver implements CaptchaSolver {
 
     try {
       await writeFile(imagePath, Buffer.from(input.image, 'base64'));
+      const timeoutMs = Math.min(input.timeoutMs, config.claude.timeoutMs);
 
-      const stdout = await this.runCli(
-        `${buildPrompt(input.hint)}\n\nКартинка: ${imagePath}`,
-        dir,
-        Math.min(input.timeoutMs, config.claude.timeoutMs),
-      );
+      const stdout = config.claude.shimUrl
+        ? await this.runOnHost(buildPrompt(input.hint), input.image, timeoutMs)
+        : await this.runCli(
+            `${buildPrompt(input.hint)}\n\nКартинка: ${imagePath}`,
+            dir,
+            timeoutMs,
+          );
 
       const answer = parseAnswer(stdout);
       return answer && normalizeHomoglyphs(answer, input.hint);
@@ -47,6 +57,42 @@ export class ClaudeSolver implements CaptchaSolver {
       return null;
     } finally {
       await rm(dir, { recursive: true, force: true });
+    }
+  }
+
+  /**
+   * Вызов CLI на хосте через шим: картинку отдаём base64, шим сам кладёт её во
+   * временный каталог рядом с запуском.
+   */
+  private async runOnHost(prompt: string, image: string, timeoutMs: number): Promise<string> {
+    const controller = new AbortController();
+    // Запас над таймаутом CLI: шим должен успеть ответить своей ошибкой, а не
+    // оборваться на нашей стороне.
+    const timer = setTimeout(() => controller.abort(), timeoutMs + 15_000);
+
+    try {
+      const response = await fetch(`${config.claude.shimUrl.replace(/\/+$/, '')}/solve`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-Token': config.claude.shimToken },
+        body: JSON.stringify({
+          prompt,
+          image,
+          model: config.claude.model,
+          timeout_ms: timeoutMs,
+        }),
+        signal: controller.signal,
+      });
+
+      const payload = (await response.json().catch(() => null)) as
+        | { stdout?: string; error?: string }
+        | null;
+
+      if (!response.ok) {
+        throw new Error(`шим ответил ${response.status}: ${payload?.error ?? ''}`.trim());
+      }
+      return payload?.stdout ?? '';
+    } finally {
+      clearTimeout(timer);
     }
   }
 

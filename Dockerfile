@@ -16,17 +16,9 @@ FROM node:22-alpine AS runner
 WORKDIR /app
 ENV NODE_ENV=production
 
-# Ступень Claude ходит через CLI, а не по API. Авторизация — токеном
-# CLAUDE_CODE_OAUTH_TOKEN (его выдаёт `claude setup-token`): на сервере
-# интерактивно залогиниться нечем. Без токена ступень просто падает, и каскад
-# уходит на следующую.
-RUN npm i -g @anthropic-ai/claude-code && \
-    apk add --no-cache git ripgrep
-ENV CLAUDE_CLI_PATH=/usr/local/bin/claude
-# В контейнере процесс идёт от root, а в настройках CLI режим bypassPermissions:
-# без этого признака он отказывается стартовать («--dangerously-skip-permissions
-# cannot be used with root/sudo privileges»). Изоляция здесь и так контейнерная.
-ENV IS_SANDBOX=1
+# CLI Claude в образе не нужен: ступень `claude` ходит на хост через
+# `hostshim/claude-shim.mjs` — там CLI уже авторизован интерактивно. Так из
+# образа уходят и лишние 300 МБ, и возня с запуском CLI под root.
 
 COPY --from=build /app/node_modules ./node_modules
 COPY --from=build /app/dist ./dist
