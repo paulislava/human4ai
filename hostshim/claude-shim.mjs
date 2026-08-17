@@ -10,11 +10,17 @@
  * Наружу шим не смотрит: слушает 127.0.0.1, доступ — по общему токену
  * (`X-Token`), а из docker-сети до него пускает отдельное правило фаервола.
  *
+ * По проводу идёт **только картинка**: промпт зашит здесь и наружу не
+ * настраивается. Так вызывающая сторона не может подменить инструкцию модели —
+ * снаружи приходит лишь то, что нужно прочитать.
+ *
  * Конфиг — переменные окружения:
- *   SHIM_TOKEN   общий секрет с контейнером (обязателен)
- *   SHIM_PORT    порт (по умолчанию 4021)
- *   SHIM_BIND    интерфейс (по умолчанию 0.0.0.0: сюда ходит docker-мост)
- *   CLAUDE_BIN   путь к CLI (по умолчанию /usr/bin/claude)
+ *   SHIM_TOKEN    общий секрет с контейнером (обязателен)
+ *   SHIM_PORT     порт (по умолчанию 4021)
+ *   SHIM_BIND     интерфейс (по умолчанию 0.0.0.0: сюда ходит docker-мост)
+ *   CLAUDE_BIN    путь к CLI (по умолчанию /usr/bin/claude)
+ *   CLAUDE_MODEL  модель (по умолчанию claude-opus-5)
+ *   SHIM_TIMEOUT_MS  предел на вызов CLI (по умолчанию 90 с)
  */
 
 import { createServer } from 'node:http';
@@ -28,7 +34,21 @@ const TOKEN = process.env.SHIM_TOKEN ?? '';
 const PORT = Number(process.env.SHIM_PORT ?? 4021);
 const BIND = process.env.SHIM_BIND ?? '0.0.0.0';
 const CLAUDE_BIN = process.env.CLAUDE_BIN ?? '/usr/bin/claude';
+const MODEL = process.env.CLAUDE_MODEL ?? 'claude-opus-5';
+const TIMEOUT_MS = Number(process.env.SHIM_TIMEOUT_MS ?? 90_000);
 const MAX_BODY = 12 * 1024 * 1024; // картинка капчи в base64
+
+/**
+ * Промпт зашит намеренно: снаружи приходит только картинка.
+ *
+ * Текст должен совпадать с `buildPrompt` в human4ai (src/solvers/prompt.ts):
+ * ступени GigaChat и Claude сравниваются по точности в статистике, а разные
+ * промпты сравнивать бессмысленно.
+ */
+const CAPTCHA_PROMPT =
+  'На картинке — капча. Прочитай символы и верни ТОЛЬКО их, ' +
+  'без кавычек, пояснений и знаков препинания. ' +
+  'Регистр сохраняй как на картинке. Если прочитать невозможно, ответь ровно: UNREADABLE';
 
 if (!TOKEN) {
   console.error('claude-shim: не задан SHIM_TOKEN');
@@ -121,24 +141,22 @@ const server = createServer((req, res) => {
       return send(400, { error: 'тело не разобралось как JSON' });
     }
 
-    const prompt = String(input.prompt ?? '').trim();
-    if (!prompt) return send(400, { error: 'нужен prompt' });
+    const image = String(input.image ?? '').trim();
+    if (!image) return send(400, { error: 'нужна картинка (image, base64)' });
 
     // Каталог свой на каждый вызов: параллельные капчи не видят картинки друг
     // друга, а CLI получает доступ только к нему.
     const dir = await mkdtemp(join(tmpdir(), 'claude-shim-'));
     try {
-      let fullPrompt = prompt;
-      if (input.image) {
-        const imagePath = join(dir, `${randomUUID().slice(0, 8)}.png`);
-        await writeFile(imagePath, Buffer.from(String(input.image), 'base64'));
-        fullPrompt = `${prompt}\n\nКартинка: ${imagePath}`;
-      }
+      const imagePath = join(dir, `${randomUUID().slice(0, 8)}.png`);
+      await writeFile(imagePath, Buffer.from(image, 'base64'));
 
       const stdout = await runCli({
-        prompt: fullPrompt,
-        model: String(input.model ?? 'claude-opus-5'),
-        timeoutMs: Number(input.timeout_ms ?? 90_000),
+        prompt: `${CAPTCHA_PROMPT}\n\nКартинка: ${imagePath}`,
+        model: MODEL,
+        // Клиент может попросить меньше, но не больше: длинный вызов держит
+        // процесс CLI на хосте.
+        timeoutMs: Math.min(Number(input.timeout_ms ?? TIMEOUT_MS), TIMEOUT_MS),
         dir,
       });
 

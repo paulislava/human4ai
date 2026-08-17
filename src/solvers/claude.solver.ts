@@ -41,7 +41,7 @@ export class ClaudeSolver implements CaptchaSolver {
       const timeoutMs = Math.min(input.timeoutMs, config.claude.timeoutMs);
 
       const stdout = config.claude.shimUrl
-        ? await this.runOnHost(buildPrompt(input.hint), input.image, timeoutMs)
+        ? await this.runOnHost(input.image, timeoutMs)
         : await this.runCli(
             `${buildPrompt(input.hint)}\n\nКартинка: ${imagePath}`,
             dir,
@@ -61,10 +61,11 @@ export class ClaudeSolver implements CaptchaSolver {
   }
 
   /**
-   * Вызов CLI на хосте через шим: картинку отдаём base64, шим сам кладёт её во
-   * временный каталог рядом с запуском.
+   * Вызов CLI на хосте через шим: отдаём **только картинку**. Промпт зашит в
+   * самом шиме — снаружи инструкцию модели подменить нельзя, а текст там
+   * совпадает с `buildPrompt`, чтобы статистика ступеней осталась сравнимой.
    */
-  private async runOnHost(prompt: string, image: string, timeoutMs: number): Promise<string> {
+  private async runOnHost(image: string, timeoutMs: number): Promise<string> {
     const controller = new AbortController();
     // Запас над таймаутом CLI: шим должен успеть ответить своей ошибкой, а не
     // оборваться на нашей стороне.
@@ -74,12 +75,7 @@ export class ClaudeSolver implements CaptchaSolver {
       const response = await fetch(`${config.claude.shimUrl.replace(/\/+$/, '')}/solve`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'X-Token': config.claude.shimToken },
-        body: JSON.stringify({
-          prompt,
-          image,
-          model: config.claude.model,
-          timeout_ms: timeoutMs,
-        }),
+        body: JSON.stringify({ image, timeout_ms: timeoutMs }),
         signal: controller.signal,
       });
 
