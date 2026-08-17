@@ -23,6 +23,10 @@ ENV NODE_ENV=production
 RUN npm i -g @anthropic-ai/claude-code && \
     apk add --no-cache git ripgrep
 ENV CLAUDE_CLI_PATH=/usr/local/bin/claude
+# В контейнере процесс идёт от root, а в настройках CLI режим bypassPermissions:
+# без этого признака он отказывается стартовать («--dangerously-skip-permissions
+# cannot be used with root/sudo privileges»). Изоляция здесь и так контейнерная.
+ENV IS_SANDBOX=1
 
 COPY --from=build /app/node_modules ./node_modules
 COPY --from=build /app/dist ./dist

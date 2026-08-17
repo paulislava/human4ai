@@ -32,6 +32,12 @@ export const config = {
     model: process.env.ANTHROPIC_MODEL ?? 'claude-opus-5',
     /** CLI поднимает агента, поэтому ему нужно больше времени, чем HTTP-вызову. */
     timeoutMs: Number(process.env.CLAUDE_TIMEOUT_MS ?? 90_000),
+    /**
+     * Токен авторизации CLI (`claude setup-token`). Без него CLI отвечает
+     * «Not logged in», поэтому ступень считается недоступной и каскад её
+     * пропускает, а не тратит на неё таймаут.
+     */
+    oauthToken: process.env.CLAUDE_CODE_OAUTH_TOKEN ?? '',
   },
 
   telegram: {

@@ -18,7 +18,9 @@ export class ClaudeSolver implements CaptchaSolver {
   readonly name = 'claude';
 
   isAvailable(): boolean {
-    return Boolean(config.claude.cliPath);
+    // Пустой токен — это не «ступень сломалась», а «её нет»: CLI без
+    // авторизации отвечает «Not logged in», и ждать от него нечего.
+    return Boolean(config.claude.cliPath && config.claude.oauthToken);
   }
 
   async solve(input: SolveInput): Promise<string | null> {
