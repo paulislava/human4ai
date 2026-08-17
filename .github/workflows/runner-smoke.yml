@@ -1,0 +1,15 @@
+# Одноразовая проверка своего раннера: что он берёт задания и умеет docker.
+# Удаляется сразу после успешного прогона.
+name: runner-smoke
+
+on:
+  workflow_dispatch:
+
+jobs:
+  smoke:
+    runs-on: [self-hosted, paulislava]
+    steps:
+      - run: |
+          echo "хост: $(hostname)"
+          docker version --format '{{.Server.Version}}'
+          docker ps --filter "publish=4020" --format '{{.Image}} {{.Status}}'
