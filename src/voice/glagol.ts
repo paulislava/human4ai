@@ -1,4 +1,5 @@
 import axios from 'axios';
+import https from 'node:https';
 import net from 'node:net';
 import tls from 'node:tls';
 import { randomUUID } from 'node:crypto';
@@ -96,6 +97,32 @@ function tunnel(station: Station): Promise<net.Socket> {
   });
 }
 
+/**
+ * Агент, который отдаёт уже готовый туннель к колонке.
+ *
+ * Node проверяет `options.agent` на «Agent-like», поэтому просто объект с
+ * `createConnection` не подходит — нужен наследник `https.Agent`. TLS к станции
+ * поднимаем поверх туннеля здесь же: сертификат у неё самоподписанный.
+ */
+class TunnelAgent extends https.Agent {
+  constructor(private readonly tunnelSocket: net.Socket) {
+    super({ keepAlive: false, maxSockets: 1 });
+  }
+
+  // Сигнатуру берём от базового Agent: callback ждёт Duplex, а не TLSSocket.
+  createConnection(
+    _options: https.RequestOptions,
+    callback?: (error: Error | null, stream: tls.TLSSocket) => void,
+  ): tls.TLSSocket {
+    const secure = tls.connect({ socket: this.tunnelSocket, rejectUnauthorized: false });
+    if (callback) {
+      secure.once('secureConnect', () => callback(null, secure));
+      secure.once('error', (error: Error) => callback(error, secure));
+    }
+    return secure;
+  }
+}
+
 /** Команда «повтори дословно» — та же, что у Home Assistant-интеграции. */
 function repeatAfterMe(conversationToken: string, text: string): string {
   return JSON.stringify({
@@ -126,10 +153,8 @@ export async function say(station: Station, text: string): Promise<void> {
 
   const ws = new WebSocket(`wss://${station.host}:${station.port}`, {
     rejectUnauthorized: false,
-    // Через прокси: свой сокет отдаём агентом — ws поднимет по нему TLS сам.
-    ...(socket
-      ? { agent: { createConnection: () => tls.connect({ socket, rejectUnauthorized: false }) } as never }
-      : {}),
+    // Через прокси: соединение уже установлено, отдаём его агентом.
+    ...(socket ? { agent: new TunnelAgent(socket) } : {}),
     handshakeTimeout: 15_000,
   });
 
