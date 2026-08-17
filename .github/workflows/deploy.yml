@@ -87,7 +87,7 @@ jobs:
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           GPT2GIGA_BASE_URL: ${{ secrets.GPT2GIGA_BASE_URL }}
           GIGACHAT_MODEL: ${{ secrets.GIGACHAT_MODEL }}
-          CLAUDE_CLI_PATH: ${{ secrets.CLAUDE_CLI_PATH }}
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           DEFAULT_TIMEOUT_MS: ${{ secrets.DEFAULT_TIMEOUT_MS }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_ACTOR: ${{ github.actor }}
@@ -95,7 +95,7 @@ jobs:
           host: ${{ secrets.SSH_HOST }}
           username: ${{ secrets.SSH_USER }}
           key: ${{ secrets.SSH_KEY }}
-          envs: IMAGE,CLIENT_TOKENS,TELEGRAM_CAPTCHA_BOT_TOKEN,TELEGRAM_CHAT_ID,GPT2GIGA_BASE_URL,GIGACHAT_MODEL,CLAUDE_CLI_PATH,DEFAULT_TIMEOUT_MS,GH_TOKEN,GH_ACTOR
+          envs: IMAGE,CLIENT_TOKENS,TELEGRAM_CAPTCHA_BOT_TOKEN,TELEGRAM_CHAT_ID,GPT2GIGA_BASE_URL,GIGACHAT_MODEL,CLAUDE_CODE_OAUTH_TOKEN,DEFAULT_TIMEOUT_MS,GH_TOKEN,GH_ACTOR
           script: |
             set -e
             echo "$GH_TOKEN" | docker login ghcr.io -u "$GH_ACTOR" --password-stdin
@@ -126,7 +126,7 @@ jobs:
               -e TELEGRAM_CHAT_ID="$TELEGRAM_CHAT_ID" \
               -e GPT2GIGA_BASE_URL="$GPT2GIGA_BASE_URL" \
               -e GIGACHAT_MODEL="$GIGACHAT_MODEL" \
-              -e CLAUDE_CLI_PATH="$CLAUDE_CLI_PATH" \
+              -e CLAUDE_CODE_OAUTH_TOKEN="$CLAUDE_CODE_OAUTH_TOKEN" \
               -e DEFAULT_TIMEOUT_MS="$DEFAULT_TIMEOUT_MS" \
               "$IMAGE")
 
