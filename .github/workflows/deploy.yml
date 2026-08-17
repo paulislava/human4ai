@@ -105,6 +105,11 @@ jobs:
             # деплой терял бы незакрытые запросы капчи.
             docker volume create human4captcha-data >/dev/null
 
+            # Конфигурация Claude Code (settings с прокси, MCP, плагины, скиллы,
+            # сессии) лежит в отдельном томе: она не часть образа и переживает
+            # деплой. Наполняется вручную — см. README.
+            docker volume create h4c-claude-home >/dev/null
+
             # Общая сеть со gpt2giga-proxy: ступень GigaChat обращается к нему
             # по имени контейнера, а не через порт на хосте.
             docker network create h4c >/dev/null 2>&1 || true
@@ -121,6 +126,7 @@ jobs:
               --network h4c \
               -p 4020:3200 \
               -v human4captcha-data:/data \
+              -v h4c-claude-home:/root/.claude \
               -e CLIENT_TOKENS="$CLIENT_TOKENS" \
               -e TELEGRAM_CAPTCHA_BOT_TOKEN="$TELEGRAM_CAPTCHA_BOT_TOKEN" \
               -e TELEGRAM_CHAT_ID="$TELEGRAM_CHAT_ID" \
