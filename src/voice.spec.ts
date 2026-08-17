@@ -317,7 +317,7 @@ describe('MCP', () => {
       '/mcp',
       rpc('tools/call', {
         name: 'ask_user',
-        arguments: { question: 'мержить?', context: 'NoSmoke', wait: 0 },
+        arguments: { question: 'мержить?', context: 'NoSmoke', wait: 0, timeout: 5 },
       }),
       auth,
     );
@@ -357,7 +357,12 @@ describe('MCP', () => {
   it('cancel_ask снимает вопрос с очереди', async () => {
     const setup = makeSetup();
     const app = makeApp(setup);
-    const ask = setup.service.create({ client: 'claude-code', channel: 'voice', question: 'снять?' });
+    const ask = setup.service.create({
+      client: 'claude-code',
+      channel: 'voice',
+      question: 'снять?',
+      timeoutMs: 5_000,
+    });
     void setup.service.run(ask.id);
     await new Promise((resolve) => setTimeout(resolve, 20));
 

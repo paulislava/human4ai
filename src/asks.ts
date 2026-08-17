@@ -358,6 +358,9 @@ export class AskService {
         this.waiting.delete(askId);
         resolve(null);
       }, remaining);
+      // Ждать ответ — не повод держать event loop: у сервера есть свои handle'ы,
+      // а в тестах и скриптах такой таймер (у голоса — сутки) вешал процесс.
+      timer.unref?.();
 
       this.waiting.set(askId, { resolve, timer });
     });
@@ -398,6 +401,7 @@ export class AskService {
         this.waiting.delete(ask.id);
         resolve(null);
       }, remaining);
+      timer.unref?.();
 
       this.waiting.set(ask.id, { resolve, timer });
     });
