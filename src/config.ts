@@ -72,6 +72,11 @@ export const config = {
      * угодно, а сессия всё это время дожимает ответ через wait_answer.
      */
     ttlMs: Number(process.env.VOICE_TTL_MS ?? 24 * 60 * 60 * 1000),
+    /**
+     * Голосовой вопрос дублировать в Telegram. По умолчанию да: колонку легко
+     * не услышать, а телефон обычно рядом — отвечает тот канал, который быстрее.
+     */
+    alsoTelegram: (process.env.VOICE_ALSO_TELEGRAM ?? '1') !== '0',
   },
 
   /** MCP-эндпоинт /mcp для сессий Claude Code. Пусто -> выключен. */

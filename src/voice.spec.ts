@@ -24,19 +24,31 @@ function fakeVoice() {
 }
 
 function fakeTelegram() {
-  return {
+  const sent: string[] = [];
+  const reactions: number[] = [];
+  let nextMessageId = 100;
+
+  const telegram = {
     isConfigured: () => true,
-    sendQuestion: async () => 100,
-    sendPoll: async () => ({ messageId: 101, pollId: 'poll-101' }),
-    setReaction: async () => undefined,
+    sendQuestion: async ({ text }: { text: string }) => {
+      sent.push(text);
+      return (nextMessageId += 1);
+    },
+    sendPoll: async () => ({ messageId: (nextMessageId += 1), pollId: `poll-${nextMessageId}` }),
+    setReaction: async (messageId: number) => {
+      reactions.push(messageId);
+    },
   } as unknown as TelegramClient;
+
+  return { telegram, sent, reactions };
 }
 
 function makeSetup(timeoutMs = 5_000) {
   const store = new AskStore(new Database(':memory:'));
   const { voice, said } = fakeVoice();
-  const service = new AskService(store, fakeTelegram(), timeoutMs, voice);
-  return { store, service, voice, said, asks: { store, service } };
+  const { telegram, sent, reactions } = fakeTelegram();
+  const service = new AskService(store, telegram, timeoutMs, voice);
+  return { store, service, voice, said, sent, reactions, asks: { store, service } };
 }
 
 /** Мини-сервер только с голосовыми роутерами — без капчи и её зависимостей. */
@@ -148,6 +160,48 @@ describe('голосовой канал', () => {
       timeoutMs: -1,
     });
     expect(setup.store.voiceHead()).toBeNull();
+  });
+
+  it('дублирует вопрос в Telegram и закрывается тем, кто ответил первым', async () => {
+    const setup = makeSetup();
+    const ask = setup.service.create({ client: 'alpha', channel: 'voice', question: 'мержить?' });
+    const running = setup.service.run(ask.id);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    // Ушло и на колонку, и в Telegram — с подсказкой про голосовой ответ.
+    expect(setup.said).toEqual(['вопрос: мержить?']);
+    expect(setup.sent[0]).toContain('звучит на колонке');
+    const messageId = setup.store.get(ask.id)!.telegramMessageId!;
+
+    // Ответ реплаем в Telegram закрывает вопрос и убирает его из очереди.
+    expect(setup.service.handleReply(messageId, 'да, мержь', 900)).toBe(true);
+    expect((await running).answer).toBe('да, мержь');
+    expect(setup.store.voiceHead()).toBeNull();
+  });
+
+  it('второй ответ на уже закрытый вопрос игнорируется', async () => {
+    const setup = makeSetup();
+    const ask = setup.service.create({ client: 'alpha', channel: 'voice', question: 'мержить?' });
+    const running = setup.service.run(ask.id);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    // Быстрее оказался голос — реплай в Telegram приходит уже на закрытый вопрос.
+    setup.service.answerVoiceHead('ответ голосом');
+    const messageId = setup.store.get(ask.id)!.telegramMessageId!;
+    expect(setup.service.handleReply(messageId, 'ответ реплаем', 901)).toBe(true);
+
+    expect((await running).answer).toBe('ответ голосом');
+  });
+
+  it('ответ голосом помечает дубль в Telegram', async () => {
+    const setup = makeSetup();
+    const ask = setup.service.create({ client: 'alpha', channel: 'voice', question: 'мержить?' });
+    void setup.service.run(ask.id);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    const messageId = setup.store.get(ask.id)!.telegramMessageId!;
+    setup.service.answerVoiceHead('да');
+    expect(setup.reactions).toContain(messageId);
   });
 
   it('по умолчанию голосовой вопрос живёт сутки', () => {

@@ -381,6 +381,18 @@ export class AskService {
   private async runVoice(ask: Ask, remaining: number): Promise<Ask> {
     this.speakHead();
 
+    // Дубль в Telegram: колонку можно не услышать, телефон почти всегда рядом.
+    // Кто ответит первым — тот и закрывает вопрос (см. deliver): второй ответ
+    // придёт уже на закрытый вопрос и будет проигнорирован.
+    if (config.voice.alsoTelegram && this.telegram.isConfigured()) {
+      try {
+        const messageId = await this.telegram.sendQuestion({ text: this.buildText(ask) });
+        this.store.update(ask.id, { telegramMessageId: messageId });
+      } catch (error) {
+        console.error(`[ask] ${ask.id}: дубль в Telegram не ушёл:`, (error as Error).message);
+      }
+    }
+
     const answer = await new Promise<string | null>((resolve) => {
       const timer = setTimeout(() => {
         this.waiting.delete(ask.id);
@@ -439,22 +451,39 @@ export class AskService {
     const head = this.store.voiceHead();
     if (!head) return null;
 
-    // Статус ставим сразу: голова очереди должна сдвинуться до того, как
-    // проснётся ожидающий ход — иначе второй ответ уйдёт тому же вопросу.
-    // Если клиент уже не ждёт (перезапустился), ответ всё равно сохранён и
-    // будет забран через GET /api/ask/:id.
-    const answer = this.resolveOption(head, text.trim());
-    this.store.update(head.id, { status: 'answered', answer });
+    const closed = this.deliver(head, text, 'голосом');
+    return closed ?? this.store.get(head.id);
+  }
 
-    const pending = this.waiting.get(head.id);
+  /**
+   * Закрыть вопрос ответом. Возвращает null, если вопрос уже закрыт — так
+   * отсекается второй ответ, когда вопрос ушёл сразу в два канала (колонка и
+   * Telegram) и Павел ответил в оба.
+   *
+   * Статус ставим синхронно, до пробуждения ожидающего хода: иначе следующий
+   * ответ успел бы прийти на тот же вопрос.
+   */
+  private deliver(ask: Ask, text: string, how: string): Ask | null {
+    const current = this.store.get(ask.id);
+    if (!current || current.status !== 'pending') return null;
+
+    const answer = this.resolveOption(current, text.trim());
+    this.store.update(current.id, { status: 'answered', answer });
+
+    const pending = this.waiting.get(current.id);
     if (pending) {
       clearTimeout(pending.timer);
-      this.waiting.delete(head.id);
+      this.waiting.delete(current.id);
       pending.resolve(answer);
     }
 
-    console.log(`[ask] ${head.id}: ответ получен голосом`);
-    return this.store.get(head.id);
+    if (how === 'голосом' && current.telegramMessageId) {
+      void this.telegram.setReaction(current.telegramMessageId, REACTIONS.taken);
+    }
+
+    // Секрет в лог не пишем — ни значение, ни его длину.
+    console.log(`[ask] ${current.id}: ответ получен ${how} (${current.kind})`);
+    return this.store.get(current.id);
   }
 
   /** «Пропусти»: снимаем голову очереди, клиент уходит в терминальный фолбэк. */
@@ -501,20 +530,17 @@ export class AskService {
     const ask = this.store.byTelegramMessage(replyToMessageId);
     if (!ask) return false;
 
-    const pending = this.waiting.get(ask.id);
-    if (!pending) return false;
-
-    clearTimeout(pending.timer);
-    this.waiting.delete(ask.id);
-
     if (replyMessageId !== undefined) {
       this.store.update(ask.id, { telegramReplyMessageId: replyMessageId });
       void this.telegram.setReaction(replyMessageId, REACTIONS.taken);
     }
 
-    // Секрет в лог не пишем — ни значение, ни его длину.
-    console.log(`[ask] ${ask.id}: ответ получен (${ask.kind})`);
-    pending.resolve(this.resolveOption(ask, text.trim()));
+    // Вопрос мог быть уже закрыт голосом: реплай всё равно «наш» (сообщение
+    // разобрано), но ответ второй раз не применяем.
+    const closed = this.deliver(ask, text, 'реплаем');
+    if (!closed && ask.channel === 'voice') {
+      console.log(`[ask] ${ask.id}: реплай пришёл на уже закрытый вопрос`);
+    }
     return true;
   }
 
@@ -619,8 +645,16 @@ export class AskService {
       lines.push('', `Ссылка: ${ask.link}`);
     }
 
+    if (ask.channel === 'voice') {
+      lines.push('', 'Этот вопрос сейчас звучит на колонке — можно ответить голосом:');
+      lines.push('«Алиса, ответь коду …». Кто первый, тот и закрывает вопрос.');
+    }
+
     const minutes = Math.round((ask.expiresAt - Date.now()) / 60_000);
-    lines.push('', `Жду ${minutes} мин.`);
+    lines.push(
+      '',
+      minutes > 90 ? `Жду ${Math.round(minutes / 60)} ч.` : `Жду ${minutes} мин.`,
+    );
 
     return lines.join('\n');
   }
