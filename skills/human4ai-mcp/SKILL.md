@@ -1,0 +1,116 @@
+---
+name: human4ai-mcp
+description: "Подключить MCP-сервер human4ai (вопросы человеку голосом и в Telegram) к Claude Code, Codex и OpenClaw — с токеном, с проверкой соединения. Использовать, когда просят «подключи MCP human4ai», «добавь инструменты вопросов в codex/openclaw», «переустанови MCP с новым токеном»."
+---
+
+# Подключить MCP human4ai к агентам
+
+Сервер даёт четыре инструмента: `ask_user` (спросить человека — голосом на
+колонке или реплаем в Telegram), `wait_answer`, `cancel_ask`, `queue_status`.
+
+Проще всего — одной командой из репозитория:
+
+```bash
+./start.sh --skip-service --skip-stations      # подключит все найденные агенты
+```
+
+Дальше — если нужно вручную или по одному агенту.
+
+## Данные, которые нужны
+
+```bash
+cd <репозиторий human4ai>
+TOKEN=$(sed -n 's/^MCP_TOKEN=\(.*\)$/\1/p' .env)      # значение не печатать!
+URL=$(sed -n 's/^PUBLIC_URL=\(.*\)$/\1/p' .env)
+[ -n "$URL" ] || URL="http://127.0.0.1:$(sed -n 's/^HOST_PORT=\(.*\)$/\1/p' .env)"
+MCP_URL="${URL%/}/mcp"
+```
+
+С другой машины нужен именно публичный `PUBLIC_URL` — `127.0.0.1` там указывает
+не туда. Если публичного адреса нет, но машины в одной сети, годится
+`http://<LAN-адрес хоста>:<порт>`.
+
+## Claude Code
+
+```bash
+claude mcp remove human4ai --scope user 2>/dev/null
+claude mcp add --scope user --transport http human4ai "$MCP_URL" \
+  --header "Authorization: Bearer $TOKEN"
+claude mcp list | grep human4ai        # ждём «✔ Connected»
+```
+
+## Codex
+
+Codex умеет bearer **только через переменную окружения**, поэтому токен нужно
+положить в профиль оболочки — иначе после перезапуска терминала MCP отвалится.
+
+```bash
+grep -q HUMAN4AI_MCP_TOKEN ~/.zshrc || echo "export HUMAN4AI_MCP_TOKEN=$TOKEN" >> ~/.zshrc
+export HUMAN4AI_MCP_TOKEN=$TOKEN
+codex mcp remove human4ai 2>/dev/null
+codex mcp add human4ai --url "$MCP_URL" --bearer-token-env-var HUMAN4AI_MCP_TOKEN
+codex mcp list
+```
+
+Windows: `[Environment]::SetEnvironmentVariable('HUMAN4AI_MCP_TOKEN', $token, 'User')`.
+
+## OpenClaw
+
+```bash
+openclaw mcp remove human4ai 2>/dev/null
+openclaw mcp add human4ai --url "$MCP_URL" --transport streamable-http \
+  --header "Authorization=Bearer $TOKEN"
+openclaw mcp list
+```
+
+`openclaw mcp add` перед сохранением сам пробует подключиться, так что успешный
+вывод — это уже проверка. Если сервер временно недоступен, а запись нужна —
+`--no-probe`.
+
+## Проверка вживую
+
+```bash
+curl -s "$MCP_URL" -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' | head -c 200
+```
+
+Ждём список из `ask_user`, `wait_answer`, `cancel_ask`, `queue_status`.
+`401` → не тот токен; пусто/таймаут → служба не поднята или адрес недоступен
+(проверь `curl $URL/api/health`).
+
+## Как вести себя в сессии (обязательный порядок)
+
+Пользователь не видит вызовов инструментов — для него молчащая сессия выглядит
+зависшей. Поэтому:
+
+1. **Сразу после `ask_user` напиши текстом**, что спросил и о чём:
+   «Спросил через human4ai: мержить MR 42? Жду ответа голосом или в Telegram.»
+2. **Опрашивай пачками — не больше 5 `wait_answer` подряд.**
+3. После каждой пачки — короткая строка вроде «Жду ответа» (можно добавить,
+   сколько уже ждём). Потом следующая пачка.
+4. Как только пришёл `answered` — скажи, что получил, и продолжай работу.
+   `skipped` / `timeout` — скажи и спроси в терминале.
+
+Так у пользователя всегда виден статус: что именно спрошено, что сессия ждёт и
+сколько уже. Тишина между вызовами недопустима.
+
+## Как этим пользоваться в сессии
+
+`ask_user` кладёт вопрос в общую очередь: голосом он звучит на колонке и
+дублируется в Telegram, отвечает тот канал, который быстрее. Очередь строго
+FIFO — ответ уходит той сессии, которая спросила раньше. Если вернулся
+`status: "pending"` — **дожимай `wait_answer` в цикле**: голосовой вопрос живёт
+сутки. Сдавайся только на `skipped` («пропусти») или `timeout`.
+
+Секреты (`kind: "secret"`) голосом не спрашиваются — только в Telegram; ответ
+выдаётся один раз, стирается из базы и удаляется из чата.
+
+## Правила
+
+- Значение `MCP_TOKEN` **не печатать** в ответ пользователю — только подставлять
+  в команды.
+- Токен поменялся (пересоздали `.env`) — переподключить всех трёх агентов, иначе
+  они будут получать 401 и молча терять инструменты.
+- Не прописывай MCP руками в `~/.claude.json`, `~/.codex/config.toml` или
+  `~/.openclaw/openclaw.json`: CLI-команды делают это корректно и проверяют связь.

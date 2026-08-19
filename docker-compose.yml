@@ -1,0 +1,36 @@
+# Одна служба — один контейнер. Поднимается одной командой:
+#
+#   docker compose up -d --build
+#
+# Всё остальное (секреты, токены, адреса колонок) живёт в .env — см. .env.example
+# и scripts/setup.sh, который этот .env и создаёт.
+
+services:
+  human4ai:
+    build: .
+    image: human4ai:local
+    container_name: human4ai
+    env_file: .env
+    # Порт на хосте задаётся в .env (HOST_PORT), внутри контейнера всегда 3200.
+    ports:
+      - "${HOST_PORT:-4020}:3200"
+    volumes:
+      # База задач переживает пересборку образа: незакрытые вопросы не теряются.
+      - human4ai-data:/data
+    environment:
+      DATABASE_PATH: /data/human4ai.sqlite
+    # Контейнер сам себе служба: докер поднимет его после перезагрузки машины.
+    restart: unless-stopped
+    # Чтобы из контейнера был доступен хост — там живут gpt2giga-proxy, шим к
+    # claude CLI и прокси в домашнюю локалку.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3200/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+
+volumes:
+  human4ai-data:
