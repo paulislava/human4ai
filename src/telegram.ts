@@ -230,6 +230,50 @@ export class TelegramClient {
     }
   }
 
+  /**
+   * Удаляет сообщение. Нужно для секретов: ответ Павла — это само значение, и
+   * после выдачи клиенту ему незачем оставаться в переписке.
+   *
+   * Ошибку глотаем: Telegram не даёт удалять сообщения старше 48 часов, а
+   * задача из-за этого проваливаться не должна.
+   */
+  async deleteMessage(messageId: number): Promise<void> {
+    if (!this.isConfigured()) return;
+
+    try {
+      await axios.post(
+        `${this.apiUrl()}/deleteMessage`,
+        { chat_id: config.telegram.chatId, message_id: messageId },
+        { timeout: 15_000 },
+      );
+    } catch (error) {
+      console.error('Telegram deleteMessage:', (error as Error).message);
+    }
+  }
+
+  /**
+   * Переписывает текст своего сообщения — так вопрос в переписке превращается в
+   * отметку «ответ принят», а не остаётся висеть с полем для ответа.
+   */
+  async editMessageText(messageId: number, text: string): Promise<void> {
+    if (!this.isConfigured()) return;
+
+    try {
+      await axios.post(
+        `${this.apiUrl()}/editMessageText`,
+        {
+          chat_id: config.telegram.chatId,
+          message_id: messageId,
+          text,
+          disable_web_page_preview: true,
+        },
+        { timeout: 15_000 },
+      );
+    } catch (error) {
+      console.error('Telegram editMessageText:', (error as Error).message);
+    }
+  }
+
   private apiUrl(): string {
     return `https://api.telegram.org/bot${config.telegram.botToken}`;
   }

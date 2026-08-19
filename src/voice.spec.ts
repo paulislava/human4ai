@@ -26,6 +26,8 @@ function fakeVoice() {
 function fakeTelegram() {
   const sent: string[] = [];
   const reactions: number[] = [];
+  const deleted: number[] = [];
+  const edited: Array<{ messageId: number; text: string }> = [];
   let nextMessageId = 100;
 
   const telegram = {
@@ -38,17 +40,23 @@ function fakeTelegram() {
     setReaction: async (messageId: number) => {
       reactions.push(messageId);
     },
+    deleteMessage: async (messageId: number) => {
+      deleted.push(messageId);
+    },
+    editMessageText: async (messageId: number, text: string) => {
+      edited.push({ messageId, text });
+    },
   } as unknown as TelegramClient;
 
-  return { telegram, sent, reactions };
+  return { telegram, sent, reactions, deleted, edited };
 }
 
 function makeSetup(timeoutMs = 5_000) {
   const store = new AskStore(new Database(':memory:'));
   const { voice, said } = fakeVoice();
-  const { telegram, sent, reactions } = fakeTelegram();
+  const { telegram, sent, reactions, deleted, edited } = fakeTelegram();
   const service = new AskService(store, telegram, timeoutMs, voice);
-  return { store, service, voice, said, sent, reactions, asks: { store, service } };
+  return { store, service, voice, said, sent, reactions, deleted, edited, asks: { store, service } };
 }
 
 /** Мини-сервер только с голосовыми роутерами — без капчи и её зависимостей. */
@@ -338,6 +346,49 @@ describe('MCP', () => {
       id: data.id,
       answer: 'да',
     });
+  });
+
+  it('забранный через MCP ответ закрывает вопрос в переписке', async () => {
+    const setup = makeSetup();
+    const app = makeApp(setup);
+
+    const asked = await callJson(
+      app,
+      'POST',
+      '/mcp',
+      rpc('tools/call', {
+        name: 'ask_user',
+        arguments: { question: 'мержить?', context: 'NoSmoke', wait: 0, timeout: 5 },
+      }),
+      auth,
+    );
+    const id = asked.body.result.structuredContent.id;
+    await callJson(app, 'POST', `/alice/${SECRET}`, utterance('ответь коду да'));
+
+    // До выдачи ответа сессии переписку не трогаем: правка появляется ровно в
+    // момент, когда значение доехало до клиента.
+    expect(setup.edited).toHaveLength(0);
+
+    await callJson(
+      app,
+      'POST',
+      '/mcp',
+      rpc('tools/call', { name: 'wait_answer', arguments: { id, wait: 0 } }),
+      auth,
+    );
+
+    expect(setup.edited).toHaveLength(1);
+    expect(setup.edited[0].text).toContain('✅ Ответ принят');
+
+    // Повторное чтение ответа переписку уже не правит.
+    await callJson(
+      app,
+      'POST',
+      '/mcp',
+      rpc('tools/call', { name: 'wait_answer', arguments: { id, wait: 0 } }),
+      auth,
+    );
+    expect(setup.edited).toHaveLength(1);
   });
 
   it('queue_status показывает порядок', async () => {

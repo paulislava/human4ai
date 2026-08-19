@@ -135,7 +135,14 @@ export function createMcpRouter(
 ): Router {
   const router = Router();
 
-  /** Дождаться, пока вопрос уйдёт из pending, но не дольше `waitMs`. */
+  /**
+   * Дождаться, пока вопрос уйдёт из pending, но не дольше `waitMs`.
+   *
+   * Готовый ответ забираем через сервис, а не читаем из базы: это и есть момент
+   * «клиент получил значение» — тогда же в переписке появляется отметка
+   * «принято», вопрос переписывается на «✅ Ответ принят», а ответ на секрет
+   * удаляется из чата.
+   */
   async function waitFor(id: string, waitMs: number): Promise<Ask | null> {
     const deadline = Date.now() + Math.max(0, Math.min(waitMs, config.mcp.maxWaitMs));
     let ask = asks.store.get(id);
@@ -145,7 +152,7 @@ export function createMcpRouter(
       ask = asks.store.get(id);
     }
 
-    return ask;
+    return ask?.status === 'answered' ? asks.service.takeAnswer(id) : ask;
   }
 
   async function callTool(name: string, args: Record<string, unknown>) {

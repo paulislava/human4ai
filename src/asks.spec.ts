@@ -1,10 +1,12 @@
 import Database from 'better-sqlite3';
 import { AskService, AskStore } from './asks';
-import { TelegramClient } from './telegram';
+import { REACTIONS, TelegramClient } from './telegram';
 
 /** Телеграм подменяем: тесты не должны никуда ходить и никого спрашивать. */
 function fakeTelegram() {
   const reactions: Array<{ messageId: number; emoji: string | null }> = [];
+  const deleted: number[] = [];
+  const edited: Array<{ messageId: number; text: string }> = [];
   let nextMessageId = 100;
 
   const telegram = {
@@ -17,16 +19,31 @@ function fakeTelegram() {
     setReaction: async (messageId: number, emoji: string | null) => {
       reactions.push({ messageId, emoji });
     },
+    deleteMessage: async (messageId: number) => {
+      deleted.push(messageId);
+    },
+    editMessageText: async (messageId: number, text: string) => {
+      edited.push({ messageId, text });
+    },
   } as unknown as TelegramClient;
 
-  return { telegram, reactions };
+  return { telegram, reactions, deleted, edited };
 }
 
 function makeService(timeoutMs = 5_000) {
   const store = new AskStore(new Database(':memory:'));
-  const { telegram, reactions } = fakeTelegram();
-  return { store, reactions, service: new AskService(store, telegram, timeoutMs) };
+  const { telegram, reactions, deleted, edited } = fakeTelegram();
+  return {
+    store,
+    reactions,
+    deleted,
+    edited,
+    service: new AskService(store, telegram, timeoutMs),
+  };
 }
+
+/** Ждём микрозадачи: приборка в чате идёт фоном, ответ клиенту её не ждёт. */
+const flush = () => new Promise((resolve) => setTimeout(resolve, 10));
 
 describe('AskService', () => {
   it('отдаёт ответ, пришедший реплаем на свой вопрос', async () => {
@@ -258,5 +275,70 @@ describe('AskService: вопрос опросом', () => {
 
     expect(pollsSent).toBe(0);
     expect(store.get(ask.id)!.answer).toBe('секрет');
+  });
+});
+
+describe('приборка в переписке после выдачи ответа', () => {
+  async function answered(kind: 'secret' | 'text') {
+    const setup = makeService();
+    const ask = setup.service.create({ client: 'test', kind, question: 'Токен от BotFather?' });
+    const running = setup.service.run(ask.id);
+    await flush();
+
+    const questionMessageId = setup.store.get(ask.id)!.telegramMessageId!;
+    setup.service.handleReply(questionMessageId, 'значение-ответа', 777);
+    await running;
+
+    return { ...setup, ask, questionMessageId };
+  }
+
+  it('ответ на секрет удаляется из чата, вопрос помечается принятым', async () => {
+    const setup = await answered('secret');
+
+    const taken = setup.service.takeAnswer(setup.ask.id);
+    expect(taken!.answer).toBe('значение-ответа');
+    await flush();
+
+    // Сообщение Павла — это само значение: в переписке ему делать нечего.
+    expect(setup.deleted).toEqual([777]);
+    expect(setup.edited).toHaveLength(1);
+    expect(setup.edited[0].messageId).toBe(setup.questionMessageId);
+    expect(setup.edited[0].text).toContain('✅ Ответ принят');
+    expect(setup.edited[0].text).toContain('удалён из чата');
+  });
+
+  it('на обычном вопросе ответ не удаляют, а помечают принятым', async () => {
+    const setup = await answered('text');
+
+    setup.service.takeAnswer(setup.ask.id);
+    await flush();
+
+    expect(setup.deleted).toEqual([]);
+    // Отметка «принято» появляется именно сейчас — когда клиент забрал значение.
+    expect(setup.reactions).toEqual([
+      { messageId: 777, emoji: REACTIONS.taken },
+      { messageId: 777, emoji: REACTIONS.accepted },
+    ]);
+    expect(setup.edited[0].text).toContain('✅ Ответ принят');
+  });
+
+  it('повторное чтение обычного ответа переписку не правит', async () => {
+    const setup = await answered('text');
+
+    setup.service.takeAnswer(setup.ask.id);
+    await flush();
+    setup.service.takeAnswer(setup.ask.id);
+    await flush();
+
+    expect(setup.edited).toHaveLength(1);
+  });
+
+  it('неотвеченный вопрос переписку не трогает', async () => {
+    const setup = makeService();
+    const ask = setup.service.create({ client: 'test', question: 'Ждём?' });
+
+    expect(setup.service.takeAnswer(ask.id)!.status).toBe('pending');
+    await flush();
+    expect([setup.edited, setup.deleted]).toEqual([[], []]);
   });
 });

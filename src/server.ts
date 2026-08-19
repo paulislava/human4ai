@@ -189,7 +189,7 @@ export function createServer(
 
     const ask = asks.service.create({ ...input, client: req.clientName! });
     const finished = await asks.service.run(ask.id);
-    const taken = asks.store.takeAnswer(finished.id);
+    const taken = asks.service.takeAnswer(finished.id);
 
     res.json({ id: finished.id, status: finished.status, answer: taken?.answer ?? null });
   });
@@ -223,7 +223,7 @@ export function createServer(
    * секрету незачем лежать на диске после того, как он доехал до клиента.
    */
   app.get('/api/ask/:id', (req: Request, res: Response) => {
-    const ask = asks.store.takeAnswer(String(req.params.id));
+    const ask = asks.service.takeAnswer(String(req.params.id));
     if (!ask) {
       res.status(404).json({ error: 'Вопрос не найден' });
       return;
@@ -241,7 +241,7 @@ export function createServer(
     }
 
     const finished = await asks.service.retry(ask.id);
-    const taken = asks.store.takeAnswer(finished.id);
+    const taken = asks.service.takeAnswer(finished.id);
     res.json({ id: finished.id, status: finished.status, answer: taken?.answer ?? null });
   });
 

@@ -36,6 +36,8 @@ export interface Ask {
   /** id опроса, если вопрос отправлен с вариантами. */
   telegramPollId: string | null;
   telegramReplyMessageId: number | null;
+  /** Когда вопрос «закрыли» в переписке: правка текста, отметка, удаление секрета. */
+  finalizedAt: number | null;
   /** Колонка для голосового вопроса: номер, имя или device_id. */
   station: string | null;
   /** Когда вопрос прозвучал — чтобы не проговаривать его дважды. */
@@ -58,6 +60,7 @@ interface AskRow {
   telegram_message_id: number | null;
   telegram_poll_id: string | null;
   telegram_reply_message_id: number | null;
+  finalized_at: number | null;
   station: string | null;
   spoken_at: number | null;
   created_at: number;
@@ -102,6 +105,7 @@ export class AskStore {
       ['channel', 'TEXT'],
       ['station', 'TEXT'],
       ['spoken_at', 'INTEGER'],
+      ['finalized_at', 'INTEGER'],
     ]) {
       const exists = (
         this.db.prepare('SELECT * FROM pragma_table_info(?)').all('asks') as Array<{
@@ -118,11 +122,11 @@ export class AskStore {
       .prepare(
         `INSERT INTO asks (id, client, channel, kind, question, context, link, options,
                            status, answer, telegram_message_id, telegram_poll_id,
-                           telegram_reply_message_id, station, spoken_at,
+                           telegram_reply_message_id, finalized_at, station, spoken_at,
                            created_at, expires_at)
          VALUES (@id, @client, @channel, @kind, @question, @context, @link, @options,
                  @status, @answer, @telegramMessageId, @telegramPollId,
-                 @telegramReplyMessageId, @station, @spokenAt,
+                 @telegramReplyMessageId, @finalizedAt, @station, @spokenAt,
                  @createdAt, @expiresAt)`,
       )
       .run({ ...ask, options: JSON.stringify(ask.options) });
@@ -183,6 +187,7 @@ export class AskStore {
       telegramMessageId: 'telegram_message_id',
       telegramPollId: 'telegram_poll_id',
       telegramReplyMessageId: 'telegram_reply_message_id',
+      finalizedAt: 'finalized_at',
       station: 'station',
       spokenAt: 'spoken_at',
       expiresAt: 'expires_at',
@@ -240,6 +245,7 @@ function toAsk(row: AskRow): Ask {
     telegramMessageId: row.telegram_message_id,
     telegramPollId: row.telegram_poll_id,
     telegramReplyMessageId: row.telegram_reply_message_id,
+    finalizedAt: row.finalized_at,
     station: row.station,
     spokenAt: row.spoken_at,
     createdAt: row.created_at,
@@ -308,6 +314,7 @@ export class AskService {
       telegramMessageId: null,
       telegramPollId: null,
       telegramReplyMessageId: null,
+      finalizedAt: null,
       station: input.station ?? null,
       spokenAt: null,
       createdAt: now,
@@ -578,6 +585,58 @@ export class AskService {
     console.log(`[ask] ${ask.id}: выбран вариант в опросе`);
     pending.resolve(answer);
     return true;
+  }
+
+  /**
+   * Отдать ответ клиенту и закрыть вопрос в переписке.
+   *
+   * Ровно в этот момент — когда значение реально доехало до клиента, а не когда
+   * Павел его написал — на реплае появляется отметка «принято», текст вопроса
+   * заменяется на «✅ Ответ принят», а ответ на секрет удаляется из чата: он и в
+   * базе не остаётся, незачем оставлять его в переписке.
+   *
+   * Приборка идёт один раз (`finalizedAt`): клиент может читать ответ на обычный
+   * вопрос сколько угодно, но правку сообщений это повторять не должно.
+   */
+  takeAnswer(askId: string): Ask | null {
+    const ask = this.store.takeAnswer(askId);
+    if (!ask || ask.status !== 'answered') return ask;
+
+    if (!ask.finalizedAt) {
+      this.store.update(askId, { finalizedAt: Date.now() });
+      void this.finalizeInChat(ask);
+    }
+
+    return ask;
+  }
+
+  /** Правка сообщений в Telegram: не часть протокола, ошибки не важны. */
+  private async finalizeInChat(ask: Ask): Promise<void> {
+    if (!this.telegram.isConfigured()) return;
+
+    const secret = ask.kind !== 'text';
+
+    // Секрет в переписке не оставляем: сообщение Павла — это само значение.
+    if (secret && ask.telegramReplyMessageId) {
+      await this.telegram.deleteMessage(ask.telegramReplyMessageId);
+    } else if (ask.telegramReplyMessageId) {
+      await this.telegram.setReaction(ask.telegramReplyMessageId, REACTIONS.accepted);
+    }
+
+    if (ask.telegramMessageId) {
+      await this.telegram.editMessageText(ask.telegramMessageId, this.buildTakenText(ask));
+    }
+  }
+
+  /** Во что превращается вопрос после выдачи ответа клиенту. */
+  private buildTakenText(ask: Ask): string {
+    const lines = ['✅ Ответ принят', '', ask.question];
+
+    if (ask.context) lines.push('', `Кто просил: ${ask.context}`);
+    if (ask.kind !== 'text') lines.push('', 'Ваш ответ удалён из чата — это был секрет.');
+    if (ask.channel === 'voice') lines.push('', 'Вопрос закрыт.');
+
+    return lines.join('\n');
   }
 
   /** Клиент сообщил, что значение не подошло: спрашиваем заново. */
