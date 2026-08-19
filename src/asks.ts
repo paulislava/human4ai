@@ -36,6 +36,14 @@ export interface Ask {
   /** id опроса, если вопрос отправлен с вариантами. */
   telegramPollId: string | null;
   telegramReplyMessageId: number | null;
+  /**
+   * Пост-заголовок треда: обычное сообщение, которое можно править. Именно оно
+   * превращается в «✅ Ответ принят» — само приглашение с `force_reply`
+   * Telegram редактировать не даёт.
+   */
+  telegramAnchorMessageId: number | null;
+  /** Топик форума под этот вопрос (только в группе с топиками). */
+  telegramThreadId: number | null;
   /** Когда вопрос «закрыли» в переписке: правка текста, отметка, удаление секрета. */
   finalizedAt: number | null;
   /** Колонка для голосового вопроса: номер, имя или device_id. */
@@ -60,6 +68,8 @@ interface AskRow {
   telegram_message_id: number | null;
   telegram_poll_id: string | null;
   telegram_reply_message_id: number | null;
+  telegram_anchor_message_id: number | null;
+  telegram_thread_id: number | null;
   finalized_at: number | null;
   station: string | null;
   spoken_at: number | null;
@@ -106,6 +116,8 @@ export class AskStore {
       ['station', 'TEXT'],
       ['spoken_at', 'INTEGER'],
       ['finalized_at', 'INTEGER'],
+      ['telegram_anchor_message_id', 'INTEGER'],
+      ['telegram_thread_id', 'INTEGER'],
     ]) {
       const exists = (
         this.db.prepare('SELECT * FROM pragma_table_info(?)').all('asks') as Array<{
@@ -122,11 +134,13 @@ export class AskStore {
       .prepare(
         `INSERT INTO asks (id, client, channel, kind, question, context, link, options,
                            status, answer, telegram_message_id, telegram_poll_id,
-                           telegram_reply_message_id, finalized_at, station, spoken_at,
+                           telegram_reply_message_id, telegram_anchor_message_id,
+                           telegram_thread_id, finalized_at, station, spoken_at,
                            created_at, expires_at)
          VALUES (@id, @client, @channel, @kind, @question, @context, @link, @options,
                  @status, @answer, @telegramMessageId, @telegramPollId,
-                 @telegramReplyMessageId, @finalizedAt, @station, @spokenAt,
+                 @telegramReplyMessageId, @telegramAnchorMessageId,
+                 @telegramThreadId, @finalizedAt, @station, @spokenAt,
                  @createdAt, @expiresAt)`,
       )
       .run({ ...ask, options: JSON.stringify(ask.options) });
@@ -187,6 +201,8 @@ export class AskStore {
       telegramMessageId: 'telegram_message_id',
       telegramPollId: 'telegram_poll_id',
       telegramReplyMessageId: 'telegram_reply_message_id',
+      telegramAnchorMessageId: 'telegram_anchor_message_id',
+      telegramThreadId: 'telegram_thread_id',
       finalizedAt: 'finalized_at',
       station: 'station',
       spokenAt: 'spoken_at',
@@ -245,6 +261,8 @@ function toAsk(row: AskRow): Ask {
     telegramMessageId: row.telegram_message_id,
     telegramPollId: row.telegram_poll_id,
     telegramReplyMessageId: row.telegram_reply_message_id,
+    telegramAnchorMessageId: row.telegram_anchor_message_id,
+    telegramThreadId: row.telegram_thread_id,
     finalizedAt: row.finalized_at,
     station: row.station,
     spokenAt: row.spoken_at,
@@ -314,6 +332,8 @@ export class AskService {
       telegramMessageId: null,
       telegramPollId: null,
       telegramReplyMessageId: null,
+      telegramAnchorMessageId: null,
+      telegramThreadId: null,
       finalizedAt: null,
       station: input.station ?? null,
       spokenAt: null,
@@ -342,23 +362,7 @@ export class AskService {
 
     if (ask.channel === 'voice') return this.runVoice(ask, remaining);
 
-    // Варианты отправляем опросом — ответ одним тапом. Секрет и код в опрос
-    // не превратить, да и незачем: их набирают руками.
-    if (ask.options.length > 0 && ask.kind === 'text') {
-      const poll = await this.telegram.sendPoll({
-        question: this.buildPollQuestion(ask),
-        options: ask.options,
-      });
-      this.store.update(askId, {
-        telegramMessageId: poll.messageId,
-        telegramPollId: poll.pollId,
-      });
-    } else {
-      const messageId = await this.telegram.sendQuestion({
-        text: this.buildText(ask),
-      });
-      this.store.update(askId, { telegramMessageId: messageId });
-    }
+    await this.sendToTelegram(ask);
 
     const answer = await new Promise<string | null>((resolve) => {
       const timer = setTimeout(() => {
@@ -396,8 +400,7 @@ export class AskService {
     // придёт уже на закрытый вопрос и будет проигнорирован.
     if (config.voice.alsoTelegram && this.telegram.isConfigured()) {
       try {
-        const messageId = await this.telegram.sendQuestion({ text: this.buildText(ask) });
-        this.store.update(ask.id, { telegramMessageId: messageId });
+        await this.sendToTelegram(ask);
       } catch (error) {
         console.error(`[ask] ${ask.id}: дубль в Telegram не ушёл:`, (error as Error).message);
       }
@@ -421,6 +424,53 @@ export class AskService {
     this.store.update(ask.id, { status: 'timeout' });
     this.speakHead();
     return this.store.get(ask.id)!;
+  }
+
+  /**
+   * Вопрос уходит в Telegram двумя сообщениями — это и тред, и способ иметь
+   * редактируемый пост:
+   *
+   *   1) заголовок — обычное сообщение с текстом вопроса; именно его потом
+   *      правим в «✅ Ответ принят» (сообщение с `force_reply` Bot API править
+   *      не позволяет);
+   *   2) под ним, реплаем (то есть в треде), — приглашение с `force_reply` или
+   *      опрос с вариантами. Ответ Павла привязывается к нему, как и раньше.
+   */
+  private async sendToTelegram(ask: Ask): Promise<void> {
+    // В группе с топиками каждый вопрос получает свою ветку — в личке Telegram
+    // веток не даёт, там тредом работает цепочка реплаев под заголовком.
+    const threadId = await this.telegram.createTopic(this.buildTopicName(ask));
+    if (threadId) this.store.update(ask.id, { telegramThreadId: threadId });
+
+    const anchorId = await this.telegram.sendQuestion({
+      text: this.buildText(ask),
+      threadId: threadId ?? undefined,
+    });
+    this.store.update(ask.id, { telegramAnchorMessageId: anchorId });
+
+    // Варианты отправляем опросом — ответ одним тапом. Секрет и код в опрос
+    // не превратить, да и незачем: их набирают руками.
+    if (ask.options.length > 0 && ask.kind === 'text') {
+      const poll = await this.telegram.sendPoll({
+        question: this.buildPollQuestion(ask),
+        options: ask.options,
+        replyToMessageId: anchorId,
+        threadId: threadId ?? undefined,
+      });
+      this.store.update(ask.id, {
+        telegramMessageId: poll.messageId,
+        telegramPollId: poll.pollId,
+      });
+      return;
+    }
+
+    const promptId = await this.telegram.sendQuestion({
+      text: 'Ответьте реплаем на это сообщение 👇',
+      forceReply: true,
+      replyToMessageId: anchorId,
+      threadId: threadId ?? undefined,
+    });
+    this.store.update(ask.id, { telegramMessageId: promptId });
   }
 
   /** Проговорить первый вопрос очереди, если он ещё не звучал. */
@@ -623,9 +673,29 @@ export class AskService {
       await this.telegram.setReaction(ask.telegramReplyMessageId, REACTIONS.accepted);
     }
 
-    if (ask.telegramMessageId) {
-      await this.telegram.editMessageText(ask.telegramMessageId, this.buildTakenText(ask));
+    // Правим заголовок треда: он обычный, поэтому редактируется. Приглашение
+    // «ответьте реплаем» после ответа только мешает — убираем его, а опрос
+    // оставляем: в нём виден сделанный выбор.
+    if (ask.telegramAnchorMessageId) {
+      await this.telegram.editMessageText(
+        ask.telegramAnchorMessageId,
+        this.buildTakenText(ask),
+      );
     }
+    if (ask.telegramMessageId && !ask.telegramPollId) {
+      await this.telegram.deleteMessage(ask.telegramMessageId);
+    }
+    // Отвеченный вопрос закрываем: иначе список веток растёт без конца.
+    if (ask.telegramThreadId) {
+      await this.telegram.closeTopic(ask.telegramThreadId);
+    }
+  }
+
+  /** Заголовок ветки: сразу видно, кто спрашивает и о чём. */
+  private buildTopicName(ask: Ask): string {
+    const who = ask.context?.trim() || ask.client;
+    const mark = ask.kind === 'text' ? '❓' : '🔒';
+    return `${mark} ${who}: ${ask.question}`.replace(/\s+/g, ' ').slice(0, 128);
   }
 
   /** Во что превращается вопрос после выдачи ответа клиенту. */

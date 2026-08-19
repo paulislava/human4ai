@@ -37,6 +37,10 @@ export const REACTIONS = {
 export class TelegramClient {
   private offset = 0;
   private polling = false;
+  /** Кэш «чат — супергруппа-форум»: тип чата не меняется. */
+  private forum: boolean | null = null;
+  /** Темы в этом чате недоступны — не дёргаем createForumTopic на каждый вопрос. */
+  private topicsUnsupported = false;
 
   isConfigured(): boolean {
     return Boolean(config.telegram.botToken && config.telegram.chatId);
@@ -74,18 +78,41 @@ export class TelegramClient {
   }
 
   /**
-   * Вопрос человеку с полем ответа. Возвращает message_id — по нему реплай
-   * привязывается к своему вопросу, как и в капче.
+   * Сообщение вопроса. Возвращает message_id — по нему реплай привязывается к
+   * своей задаче, как и в капче.
+   *
+   * `forceReply` открывает поле ответа сразу, но у такого сообщения есть важное
+   * ограничение: **его нельзя отредактировать** (Bot API отвечает «message can't
+   * be edited»). Поэтому вопрос отправляется двумя сообщениями: обычный
+   * пост-заголовок, который потом правится в «✅ Ответ принят», и короткое
+   * приглашение с `force_reply` реплаем под ним — оно же образует тред.
+   *
+   * `replyToMessageId` вешает сообщение в тред к заголовку.
    */
-  async sendQuestion(params: { text: string }): Promise<number> {
+  async sendQuestion(params: {
+    text: string;
+    forceReply?: boolean;
+    replyToMessageId?: number;
+    threadId?: number;
+  }): Promise<number> {
     const response = await axios.post(
       `${this.apiUrl()}/sendMessage`,
       {
         chat_id: config.telegram.chatId,
         text: params.text,
+        ...(params.threadId ? { message_thread_id: params.threadId } : {}),
         // Ссылку в вопросе не разворачиваем: превью страницы входа бесполезно.
         disable_web_page_preview: true,
-        reply_markup: { force_reply: true },
+        ...(params.forceReply ? { reply_markup: { force_reply: true } } : {}),
+        ...(params.replyToMessageId
+          ? {
+              reply_parameters: {
+                message_id: params.replyToMessageId,
+                // Заголовок мог быть удалён — сообщение всё равно должно уйти.
+                allow_sending_without_reply: true,
+              },
+            }
+          : {}),
       },
       { timeout: 30_000 },
     );
@@ -107,11 +134,22 @@ export class TelegramClient {
   async sendPoll(params: {
     question: string;
     options: string[];
+    replyToMessageId?: number;
+    threadId?: number;
   }): Promise<{ messageId: number; pollId: string }> {
     const response = await axios.post(
       `${this.apiUrl()}/sendPoll`,
       {
         chat_id: config.telegram.chatId,
+        ...(params.threadId ? { message_thread_id: params.threadId } : {}),
+        ...(params.replyToMessageId
+          ? {
+              reply_parameters: {
+                message_id: params.replyToMessageId,
+                allow_sending_without_reply: true,
+              },
+            }
+          : {}),
         // У Telegram лимиты: вопрос до 300 символов, вариант до 100, до 10 штук.
         question: params.question.slice(0, 300),
         options: params.options.slice(0, 10).map((option) => option.slice(0, 100)),
@@ -271,6 +309,83 @@ export class TelegramClient {
       );
     } catch (error) {
       console.error('Telegram editMessageText:', (error as Error).message);
+    }
+  }
+
+  /**
+   * Чат — супергруппа-форум? Проверяем только для закрытия темы: `closeForumTopic`
+   * работает лишь там, а вот **создавать** темы можно и в личке — Telegram
+   * научился темам в личных чатах, и `createForumTopic` там отвечает `ok`.
+   *
+   * Ответ кэшируем: тип чата не меняется, а `getChat` лишний раз дёргать незачем.
+   */
+  async isForum(): Promise<boolean> {
+    if (!this.isConfigured()) return false;
+    if (this.forum !== null) return this.forum;
+
+    try {
+      const response = await axios.get(`${this.apiUrl()}/getChat`, {
+        params: { chat_id: config.telegram.chatId },
+        timeout: 15_000,
+      });
+      this.forum = Boolean(response.data?.result?.is_forum);
+    } catch (error) {
+      console.error('Telegram getChat:', (error as Error).message);
+      this.forum = false;
+    }
+
+    return this.forum;
+  }
+
+  /**
+   * Отдельная тема под вопрос. Возвращает `message_thread_id` или `null`, если
+   * темы в этом чате недоступны — тогда тредом работает цепочка реплаев.
+   *
+   * Тип чата заранее не проверяем: в личных чатах `getChat` не сообщает ничего
+   * про темы, но `createForumTopic` там работает. Проще попробовать и запомнить
+   * отказ, чем угадывать по признакам.
+   */
+  async createTopic(name: string): Promise<number | null> {
+    if (!this.isConfigured() || this.topicsUnsupported) return null;
+
+    try {
+      const response = await axios.post(
+        `${this.apiUrl()}/createForumTopic`,
+        // Лимит Telegram — 128 символов.
+        { chat_id: config.telegram.chatId, name: name.slice(0, 128) },
+        { timeout: 15_000 },
+      );
+
+      const threadId = response.data?.result?.message_thread_id;
+      if (typeof threadId === 'number') return threadId;
+
+      this.topicsUnsupported = true;
+      return null;
+    } catch (error) {
+      // Темы в этом чате не поддерживаются или боту не разрешены — больше не
+      // пробуем, работаем цепочкой реплаев.
+      this.topicsUnsupported = true;
+      console.error('Telegram createForumTopic:', (error as Error).message);
+      return null;
+    }
+  }
+
+  /**
+   * Закрыть тему отвеченного вопроса, чтобы список ветвей не разрастался.
+   * Работает только в супергруппе-форуме: в личке Telegram отвечает «the chat is
+   * not a supergroup forum», поэтому там даже не пытаемся.
+   */
+  async closeTopic(threadId: number): Promise<void> {
+    if (!this.isConfigured() || !(await this.isForum())) return;
+
+    try {
+      await axios.post(
+        `${this.apiUrl()}/closeForumTopic`,
+        { chat_id: config.telegram.chatId, message_thread_id: threadId },
+        { timeout: 15_000 },
+      );
+    } catch (error) {
+      console.error('Telegram closeForumTopic:', (error as Error).message);
     }
   }
 

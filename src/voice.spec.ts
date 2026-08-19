@@ -32,6 +32,8 @@ function fakeTelegram() {
 
   const telegram = {
     isConfigured: () => true,
+    createTopic: async () => null,
+    closeTopic: async () => undefined,
     sendQuestion: async ({ text }: { text: string }) => {
       sent.push(text);
       return (nextMessageId += 1);

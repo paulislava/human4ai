@@ -11,6 +11,8 @@ function fakeTelegram() {
 
   const telegram = {
     isConfigured: () => true,
+    createTopic: async () => null,
+    closeTopic: async () => undefined,
     sendQuestion: async () => (nextMessageId += 1),
     sendPoll: async () => {
       nextMessageId += 1;
@@ -190,6 +192,9 @@ describe('AskService: вопрос опросом', () => {
     const store = new AskStore(new Database(':memory:'));
     const telegram = {
       isConfigured: () => true,
+      // По умолчанию чат не форум: топиков нет, тред — цепочка реплаев.
+      createTopic: async () => null,
+      closeTopic: async () => undefined,
       sendQuestion: async () => 1,
       sendPoll: async (params: { question: string; options: string[] }) => {
         polls.push(params);
@@ -225,8 +230,13 @@ describe('AskService: вопрос опросом', () => {
 
   it('отозванный выбор оставляет вопрос открытым', async () => {
     const store = new AskStore(new Database(':memory:'));
+    let nextId = 900;
     const telegram = {
       isConfigured: () => true,
+      // По умолчанию чат не форум: топиков нет, тред — цепочка реплаев.
+      createTopic: async () => null,
+      closeTopic: async () => undefined,
+      sendQuestion: async () => (nextId += 1),
       sendPoll: async () => ({ messageId: 901, pollId: 'poll-2' }),
       setReaction: async () => undefined,
     } as unknown as TelegramClient;
@@ -252,6 +262,9 @@ describe('AskService: вопрос опросом', () => {
     let pollsSent = 0;
     const telegram = {
       isConfigured: () => true,
+      // По умолчанию чат не форум: топиков нет, тред — цепочка реплаев.
+      createTopic: async () => null,
+      closeTopic: async () => undefined,
       sendQuestion: async () => 902,
       sendPoll: async () => {
         pollsSent += 1;
@@ -285,14 +298,19 @@ describe('приборка в переписке после выдачи отв�
     const running = setup.service.run(ask.id);
     await flush();
 
-    const questionMessageId = setup.store.get(ask.id)!.telegramMessageId!;
-    setup.service.handleReply(questionMessageId, 'значение-ответа', 777);
+    const stored = setup.store.get(ask.id)!;
+    // Вопрос уходит двумя сообщениями: заголовок треда и приглашение ответить.
+    const anchorId = stored.telegramAnchorMessageId!;
+    const promptId = stored.telegramMessageId!;
+    expect(promptId).not.toBe(anchorId);
+
+    setup.service.handleReply(promptId, 'значение-ответа', 777);
     await running;
 
-    return { ...setup, ask, questionMessageId };
+    return { ...setup, ask, anchorId, promptId };
   }
 
-  it('ответ на секрет удаляется из чата, вопрос помечается принятым', async () => {
+  it('ответ на секрет удаляется из чата, заголовок треда помечается принятым', async () => {
     const setup = await answered('secret');
 
     const taken = setup.service.takeAnswer(setup.ask.id);
@@ -300,9 +318,10 @@ describe('приборка в переписке после выдачи отв�
     await flush();
 
     // Сообщение Павла — это само значение: в переписке ему делать нечего.
-    expect(setup.deleted).toEqual([777]);
+    // Приглашение «ответьте реплаем» после ответа тоже лишнее.
+    expect(setup.deleted).toEqual([777, setup.promptId]);
     expect(setup.edited).toHaveLength(1);
-    expect(setup.edited[0].messageId).toBe(setup.questionMessageId);
+    expect(setup.edited[0].messageId).toBe(setup.anchorId);
     expect(setup.edited[0].text).toContain('✅ Ответ принят');
     expect(setup.edited[0].text).toContain('удалён из чата');
   });
@@ -313,12 +332,14 @@ describe('приборка в переписке после выдачи отв�
     setup.service.takeAnswer(setup.ask.id);
     await flush();
 
-    expect(setup.deleted).toEqual([]);
+    // Удаляется только приглашение, ответ Павла остаётся в треде.
+    expect(setup.deleted).toEqual([setup.promptId]);
     // Отметка «принято» появляется именно сейчас — когда клиент забрал значение.
     expect(setup.reactions).toEqual([
       { messageId: 777, emoji: REACTIONS.taken },
       { messageId: 777, emoji: REACTIONS.accepted },
     ]);
+    expect(setup.edited[0].messageId).toBe(setup.anchorId);
     expect(setup.edited[0].text).toContain('✅ Ответ принят');
   });
 
@@ -342,3 +363,69 @@ describe('приборка в переписке после выдачи отв�
     expect([setup.edited, setup.deleted]).toEqual([[], []]);
   });
 });
+
+describe('темы Telegram', () => {
+  /** Заглушка чата, где темы доступны: createForumTopic отдаёт id ветки. */
+  function withTopics() {
+    const store = new AskStore(new Database(':memory:'));
+    const threads: string[] = [];
+    const sent: Array<{ threadId?: number; text: string }> = [];
+    let nextId = 500;
+
+    const telegram = {
+      isConfigured: () => true,
+      createTopic: async (name: string) => {
+        threads.push(name);
+        return 470739;
+      },
+      closeTopic: async () => undefined,
+      sendQuestion: async (params: { text: string; threadId?: number }) => {
+        sent.push({ threadId: params.threadId, text: params.text });
+        return (nextId += 1);
+      },
+      setReaction: async () => undefined,
+      deleteMessage: async () => undefined,
+      editMessageText: async () => undefined,
+    } as unknown as TelegramClient;
+
+    return { store, threads, sent, service: new AskService(store, telegram, 5_000) };
+  }
+
+  it('на каждый вопрос создаётся своя тема, оба сообщения уходят в неё', async () => {
+    const setup = withTopics();
+    const ask = setup.service.create({
+      client: 'test',
+      question: 'Мержить MR 42?',
+      context: 'NoSmoke',
+    });
+
+    void setup.service.run(ask.id);
+    await flush();
+
+    // Имя ветки: сразу видно, кто спрашивает и о чём.
+    expect(setup.threads).toEqual(['❓ NoSmoke: Мержить MR 42?']);
+    // И заголовок, и приглашение ответить — внутри этой ветки.
+    expect(setup.sent.map((m) => m.threadId)).toEqual([470739, 470739]);
+    expect(setup.store.get(ask.id)!.telegramThreadId).toBe(470739);
+  });
+
+  it('секретный вопрос помечает ветку замком', async () => {
+    const setup = withTopics();
+    const ask = setup.service.create({ client: 'test', kind: 'secret', question: 'Токен?' });
+
+    void setup.service.run(ask.id);
+    await flush();
+
+    expect(setup.threads[0]).toBe('🔒 test: Токен?');
+  });
+
+  it('два вопроса — две разные ветки', async () => {
+    const setup = withTopics();
+    setup.service.run(setup.service.create({ client: 'a', question: 'Первый?' }).id);
+    setup.service.run(setup.service.create({ client: 'b', question: 'Второй?' }).id);
+    await flush();
+
+    expect(setup.threads).toHaveLength(2);
+  });
+});
+
