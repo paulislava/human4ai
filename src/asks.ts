@@ -681,6 +681,9 @@ export class AskService {
         ask.telegramAnchorMessageId,
         this.buildTakenText(ask),
       );
+      // Отметка на своём сообщении: у секрета ответ Павла удалён, и без неё в
+      // списке тем не было бы видно, что вопрос закрыт.
+      await this.telegram.setReaction(ask.telegramAnchorMessageId, REACTIONS.done);
     }
     if (ask.telegramMessageId && !ask.telegramPollId) {
       await this.telegram.deleteMessage(ask.telegramMessageId);

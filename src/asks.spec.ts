@@ -324,6 +324,11 @@ describe('приборка в переписке после выдачи отв�
     expect(setup.edited[0].messageId).toBe(setup.anchorId);
     expect(setup.edited[0].text).toContain('✅ Ответ принят');
     expect(setup.edited[0].text).toContain('удалён из чата');
+    // Ответ Павла удалён, поэтому отметка живёт на сообщении бота.
+    expect(setup.reactions).toContainEqual({
+      messageId: setup.anchorId,
+      emoji: REACTIONS.done,
+    });
   });
 
   it('на обычном вопросе ответ не удаляют, а помечают принятым', async () => {
@@ -334,10 +339,12 @@ describe('приборка в переписке после выдачи отв�
 
     // Удаляется только приглашение, ответ Павла остаётся в треде.
     expect(setup.deleted).toEqual([setup.promptId]);
-    // Отметка «принято» появляется именно сейчас — когда клиент забрал значение.
+    // Отметки появляются именно сейчас — когда клиент забрал значение: 👍 на
+    // ответе Павла и 👌 на своём заголовке (он виден и когда ответ удалён).
     expect(setup.reactions).toEqual([
       { messageId: 777, emoji: REACTIONS.taken },
       { messageId: 777, emoji: REACTIONS.accepted },
+      { messageId: setup.anchorId, emoji: REACTIONS.done },
     ]);
     expect(setup.edited[0].messageId).toBe(setup.anchorId);
     expect(setup.edited[0].text).toContain('✅ Ответ принят');
