@@ -97,7 +97,18 @@ export const config = {
     token: process.env.MCP_TOKEN ?? '',
     /** Максимум ожидания ответа в одном вызове инструмента. */
     maxWaitMs: Number(process.env.MCP_MAX_WAIT_MS ?? 120_000),
+    /**
+     * Сколько живёт одноразовая ссылка на секрет. Полчаса: сессии хватает, чтобы
+     * забрать значение, а валяться ей на сервере дольше незачем.
+     */
+    secretLinkTtlMs: Number(process.env.SECRET_LINK_TTL_MS ?? 30 * 60 * 1000),
   },
+
+  /**
+   * Публичный адрес службы — из него собираются ссылки на секреты. Пусто ->
+   * ссылка будет относительной, и сессия подставит адрес сама.
+   */
+  publicUrl: (process.env.PUBLIC_URL ?? '').replace(/\/+$/, ''),
 };
 
 export interface ProxyConfig {

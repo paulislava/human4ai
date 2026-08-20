@@ -41,12 +41,23 @@ const TOOLS = [
       'вопрос уходит реплаем в Telegram (годится для длинных ответов, ссылок и ' +
       'секретов). Голосом формулируй коротко и разговорно: это произносится вслух. ' +
       'Сразу после вызова напиши пользователю, что спросил и о чём — он не видит ' +
-      'вызовов инструментов и иначе не поймёт, чего ждёт сессия.',
+      'вызовов инструментов и иначе не поймёт, чего ждёт сессия. ' +
+      'kind="secret"/"code" (только channel="telegram"): значение НЕ придёт в ответ — ' +
+      'вернётся одноразовая ссылка, забери её curl-ом в файл или прямо в нужную ' +
+      'команду, не печатая содержимое.',
     inputSchema: {
       type: 'object',
       properties: {
         question: { type: 'string', description: 'Вопрос одной фразой, без markdown.' },
         channel: { type: 'string', enum: ['voice', 'telegram'], description: 'Канал доставки.' },
+        kind: {
+          type: 'string',
+          enum: ['text', 'secret', 'code'],
+          description:
+            'text (по умолчанию) — обычный вопрос. secret/code — пароль, токен, ' +
+            'одноразовый код: спрашивается только в Telegram, а в ответ приходит ' +
+            'одноразовая ссылка вместо значения.',
+        },
         options: {
           type: 'array',
           items: { type: 'string' },
@@ -134,6 +145,22 @@ const TOOLS = [
   },
 ];
 
+function secretLink(token: string, expiresAt: number) {
+  const base = config.publicUrl || '';
+  const url = `${base}/api/secret/${token}`;
+
+  return {
+    url,
+    expiresInSec: Math.max(0, Math.round((expiresAt - Date.now()) / 1000)),
+    // Подсказываем безопасный способ: значение должно уйти в файл или сразу в
+    // команду, а не в вывод — иначе оно осядет в контексте сессии.
+    howTo:
+      `Значение не показано намеренно. Забери его один раз, не печатая: ` +
+      `curl -s "${url}" -o <файл> (или подставь прямо в нужную команду). ` +
+      `Ссылка одноразовая${base ? '' : '; адрес службы подставь сам'}.`,
+  };
+}
+
 function result(ask: Ask | null, id?: string) {
   if (!ask) return { status: 'not_found', id: id ?? null };
 
@@ -185,7 +212,29 @@ export function createMcpRouter(
       ask = asks.store.get(id);
     }
 
-    return ask?.status === 'answered' ? asks.service.takeAnswer(id) : ask;
+    if (ask?.status !== 'answered') return ask;
+
+    // Секрет в ответ не отдаём: сессия получит одноразовую ссылку (см. callTool).
+    if (ask.kind !== 'text') return ask;
+
+    return asks.service.takeAnswer(id);
+  }
+
+  /** Ответ инструмента: для секрета — ссылка, для обычного вопроса — значение. */
+  function answerPayload(ask: Ask | null, id: string) {
+    if (ask?.status === 'answered' && ask.kind !== 'text') {
+      const link = asks.service.takeSecretLink(ask.id, config.mcp.secretLinkTtlMs);
+      if (link) {
+        return {
+          status: 'answered',
+          id: ask.id,
+          kind: ask.kind,
+          secret: secretLink(link.token, link.expiresAt),
+        };
+      }
+    }
+
+    return result(ask, id);
   }
 
   async function callTool(name: string, args: Record<string, unknown>) {
@@ -194,7 +243,14 @@ export function createMcpRouter(
         const question = String(args.question ?? '').trim();
         if (!question) throw new Error('question обязателен');
 
-        const channel = (args.channel === 'telegram' ? 'telegram' : 'voice') as AskChannel;
+        const kind = (['secret', 'code'].includes(String(args.kind)) ? args.kind : 'text') as
+          | 'text'
+          | 'secret'
+          | 'code';
+        // Секрет голосом не спрашивают: колонка проговорила бы его вслух.
+        const channel = (
+          kind !== 'text' ? 'telegram' : args.channel === 'telegram' ? 'telegram' : 'voice'
+        ) as AskChannel;
         if (!asks.service.isAvailable(channel)) {
           throw new Error(
             channel === 'voice'
@@ -206,6 +262,7 @@ export function createMcpRouter(
         const ask = asks.service.create({
           client: 'claude-code',
           channel,
+          kind,
           question,
           context: typeof args.context === 'string' ? args.context : null,
           options: Array.isArray(args.options) ? (args.options as string[]) : undefined,
@@ -220,13 +277,13 @@ export function createMcpRouter(
         });
 
         const waitMs = (typeof args.wait === 'number' ? args.wait : config.mcp.maxWaitMs / 1000) * 1000;
-        return result(await waitFor(ask.id, waitMs), ask.id);
+        return answerPayload(await waitFor(ask.id, waitMs), ask.id);
       }
 
       case 'wait_answer': {
         const id = String(args.id ?? '');
         const waitMs = (typeof args.wait === 'number' ? args.wait : config.mcp.maxWaitMs / 1000) * 1000;
-        return result(await waitFor(id, waitMs), id);
+        return answerPayload(await waitFor(id, waitMs), id);
       }
 
       case 'cancel_ask': {

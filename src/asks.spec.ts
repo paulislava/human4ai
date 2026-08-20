@@ -436,3 +436,69 @@ describe('темы Telegram', () => {
   });
 });
 
+describe('одноразовая ссылка на секрет', () => {
+  /** Доводим секретный вопрос до состояния «ответ получен». */
+  async function answeredSecret() {
+    const setup = makeService();
+    const ask = setup.service.create({ client: 'test', kind: 'secret', question: 'Токен?' });
+    const running = setup.service.run(ask.id);
+    await flush();
+
+    setup.service.handleReply(setup.store.get(ask.id)!.telegramMessageId!, 'значение-секрета', 777);
+    await running;
+    return { ...setup, ask };
+  }
+
+  it('значение выдаётся по токену ровно один раз', async () => {
+    const setup = await answeredSecret();
+
+    const link = setup.service.takeSecretLink(setup.ask.id, 60_000)!;
+    expect(link.token).toHaveLength(64);
+    // Значение ещё в базе: его забирают отдельным запросом, а не ответом клиенту.
+    expect(setup.store.get(setup.ask.id)!.answer).toBe('значение-секрета');
+
+    expect(setup.store.consumeSecret(link.token)).toBe('значение-секрета');
+    // Второй раз ссылка не работает, и секрета в базе больше нет.
+    expect(setup.store.consumeSecret(link.token)).toBeNull();
+    expect(setup.store.get(setup.ask.id)!.answer).toBeNull();
+    expect(setup.store.get(setup.ask.id)!.status).toBe('taken');
+  });
+
+  it('повторный запрос ссылки отдаёт тот же токен', async () => {
+    const setup = await answeredSecret();
+    const first = setup.service.takeSecretLink(setup.ask.id, 60_000)!;
+    const second = setup.service.takeSecretLink(setup.ask.id, 60_000)!;
+    expect(second.token).toBe(first.token);
+  });
+
+  it('истёкшая ссылка не срабатывает и стирает секрет', async () => {
+    const setup = await answeredSecret();
+    const link = setup.service.takeSecretLink(setup.ask.id, -1)!;
+
+    expect(setup.store.consumeSecret(link.token)).toBeNull();
+    expect(setup.store.get(setup.ask.id)!.answer).toBeNull();
+  });
+
+  it('неизвестный токен ничего не отдаёт', async () => {
+    const setup = makeService();
+    expect(setup.store.consumeSecret('нет-такого-токена')).toBeNull();
+  });
+
+  it('выдача ссылки закрывает вопрос в переписке', async () => {
+    const setup = await answeredSecret();
+    setup.service.takeSecretLink(setup.ask.id, 60_000);
+    await flush();
+
+    // Тот же порядок, что и у обычного ответа: ответ Павла удалён, заголовок
+    // переписан, отметка на сообщении бота.
+    expect(setup.deleted).toContain(777);
+    expect(setup.edited[0].text).toContain('✅ Ответ принят');
+  });
+
+  it('на неотвеченном вопросе ссылки нет', async () => {
+    const setup = makeService();
+    const ask = setup.service.create({ client: 'test', kind: 'secret', question: 'Токен?' });
+    expect(setup.service.takeSecretLink(ask.id, 60_000)).toBeNull();
+  });
+});
+

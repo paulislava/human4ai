@@ -44,6 +44,14 @@ export interface Ask {
   telegramAnchorMessageId: number | null;
   /** Топик форума под этот вопрос (только в группе с топиками). */
   telegramThreadId: number | null;
+  /**
+   * Одноразовый токен, по которому секрет забирается отдельным запросом.
+   * Нужен, чтобы значение не попадало в ответ MCP: контекст модели — не место
+   * для секретов, там оно осело бы в истории сессии.
+   */
+  secretToken: string | null;
+  /** До какого момента ссылка действительна. */
+  secretExpiresAt: number | null;
   /** Когда вопрос «закрыли» в переписке: правка текста, отметка, удаление секрета. */
   finalizedAt: number | null;
   /** Колонка для голосового вопроса: номер, имя или device_id. */
@@ -70,6 +78,8 @@ interface AskRow {
   telegram_reply_message_id: number | null;
   telegram_anchor_message_id: number | null;
   telegram_thread_id: number | null;
+  secret_token: string | null;
+  secret_expires_at: number | null;
   finalized_at: number | null;
   station: string | null;
   spoken_at: number | null;
@@ -118,6 +128,8 @@ export class AskStore {
       ['finalized_at', 'INTEGER'],
       ['telegram_anchor_message_id', 'INTEGER'],
       ['telegram_thread_id', 'INTEGER'],
+      ['secret_token', 'TEXT'],
+      ['secret_expires_at', 'INTEGER'],
     ]) {
       const exists = (
         this.db.prepare('SELECT * FROM pragma_table_info(?)').all('asks') as Array<{
@@ -127,6 +139,7 @@ export class AskStore {
       if (!exists) this.db.exec(`ALTER TABLE asks ADD COLUMN ${column} ${definition}`);
     }
     this.db.exec('CREATE INDEX IF NOT EXISTS idx_asks_channel ON asks (channel, status)');
+    this.db.exec('CREATE INDEX IF NOT EXISTS idx_asks_secret_token ON asks (secret_token)');
   }
 
   create(ask: Ask): void {
@@ -135,12 +148,14 @@ export class AskStore {
         `INSERT INTO asks (id, client, channel, kind, question, context, link, options,
                            status, answer, telegram_message_id, telegram_poll_id,
                            telegram_reply_message_id, telegram_anchor_message_id,
-                           telegram_thread_id, finalized_at, station, spoken_at,
+                           telegram_thread_id, secret_token, secret_expires_at,
+                           finalized_at, station, spoken_at,
                            created_at, expires_at)
          VALUES (@id, @client, @channel, @kind, @question, @context, @link, @options,
                  @status, @answer, @telegramMessageId, @telegramPollId,
                  @telegramReplyMessageId, @telegramAnchorMessageId,
-                 @telegramThreadId, @finalizedAt, @station, @spokenAt,
+                 @telegramThreadId, @secretToken, @secretExpiresAt,
+                 @finalizedAt, @station, @spokenAt,
                  @createdAt, @expiresAt)`,
       )
       .run({ ...ask, options: JSON.stringify(ask.options) });
@@ -203,6 +218,8 @@ export class AskStore {
       telegramReplyMessageId: 'telegram_reply_message_id',
       telegramAnchorMessageId: 'telegram_anchor_message_id',
       telegramThreadId: 'telegram_thread_id',
+      secretToken: 'secret_token',
+      secretExpiresAt: 'secret_expires_at',
       finalizedAt: 'finalized_at',
       station: 'station',
       spokenAt: 'spoken_at',
@@ -222,6 +239,51 @@ export class AskStore {
 
     if (sets.length === 0) return;
     this.db.prepare(`UPDATE asks SET ${sets.join(', ')} WHERE id = @id`).run(values);
+  }
+
+  /**
+   * Выдать одноразовый токен на секрет. Значение остаётся в базе до того, как
+   * его забрали по ссылке (или до истечения срока), но в ответ клиенту не идёт.
+   */
+  issueSecretToken(id: string, ttlMs: number): { token: string; expiresAt: number } | null {
+    const ask = this.get(id);
+    if (!ask || ask.status !== 'answered' || ask.answer === null) return null;
+
+    // Действующий токен переиспользуем: повторный wait_answer не должен плодить
+    // новые ссылки на один и тот же секрет.
+    if (ask.secretToken && ask.secretExpiresAt && ask.secretExpiresAt > Date.now()) {
+      return { token: ask.secretToken, expiresAt: ask.secretExpiresAt };
+    }
+
+    const token = randomUUID().replace(/-/g, '') + randomUUID().replace(/-/g, '');
+    const expiresAt = Date.now() + ttlMs;
+    this.update(id, { secretToken: token, secretExpiresAt: expiresAt });
+    return { token, expiresAt };
+  }
+
+  /**
+   * Забрать секрет по токену — один раз. После выдачи значение и токен стираются:
+   * ссылка не должна работать дважды, а секрету незачем лежать на диске.
+   */
+  consumeSecret(token: string): string | null {
+    const row = this.db
+      .prepare('SELECT * FROM asks WHERE secret_token = ?')
+      .get(token) as AskRow | undefined;
+    if (!row) return null;
+
+    const ask = toAsk(row);
+    if (!ask.secretExpiresAt || ask.secretExpiresAt < Date.now() || ask.answer === null) {
+      this.update(ask.id, { secretToken: null, secretExpiresAt: null, answer: null });
+      return null;
+    }
+
+    this.update(ask.id, {
+      status: 'taken',
+      answer: null,
+      secretToken: null,
+      secretExpiresAt: null,
+    });
+    return ask.answer;
   }
 
   /**
@@ -263,6 +325,8 @@ function toAsk(row: AskRow): Ask {
     telegramReplyMessageId: row.telegram_reply_message_id,
     telegramAnchorMessageId: row.telegram_anchor_message_id,
     telegramThreadId: row.telegram_thread_id,
+    secretToken: row.secret_token,
+    secretExpiresAt: row.secret_expires_at,
     finalizedAt: row.finalized_at,
     station: row.station,
     spokenAt: row.spoken_at,
@@ -334,6 +398,8 @@ export class AskService {
       telegramReplyMessageId: null,
       telegramAnchorMessageId: null,
       telegramThreadId: null,
+      secretToken: null,
+      secretExpiresAt: null,
       finalizedAt: null,
       station: input.station ?? null,
       spokenAt: null,
@@ -658,6 +724,26 @@ export class AskService {
     }
 
     return ask;
+  }
+
+  /**
+   * Секрет для сессии агента: возвращаем не значение, а одноразовую ссылку.
+   *
+   * Значение секрета в ответе MCP осело бы в контексте модели и в истории
+   * сессии, поэтому сессия получает URL и забирает его отдельным запросом —
+   * curl'ом в файл или сразу в нужную команду.
+   */
+  takeSecretLink(askId: string, ttlMs: number): { token: string; expiresAt: number } | null {
+    const link = this.store.issueSecretToken(askId, ttlMs);
+    if (!link) return null;
+
+    const ask = this.store.get(askId)!;
+    if (!ask.finalizedAt) {
+      this.store.update(askId, { finalizedAt: Date.now() });
+      void this.finalizeInChat(ask);
+    }
+
+    return link;
   }
 
   /** Правка сообщений в Telegram: не часть протокола, ошибки не важны. */

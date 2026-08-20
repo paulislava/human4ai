@@ -470,6 +470,68 @@ describe('MCP', () => {
     expect(setup.edited).toHaveLength(1);
   });
 
+  it('секрет отдаётся ссылкой, а не значением', async () => {
+    const setup = makeSetup();
+    const app = makeApp(setup);
+    config.publicUrl = 'https://human4ai.example.com';
+
+    const asked = await callJson(
+      app,
+      'POST',
+      '/mcp',
+      rpc('tools/call', {
+        name: 'ask_user',
+        arguments: { question: 'Токен от BotFather?', kind: 'secret', channel: 'telegram', wait: 0 },
+      }),
+      auth,
+    );
+    const id = asked.body.result.structuredContent.id;
+
+    // Отвечаем реплаем в Telegram, как это делает Павел.
+    setup.service.handleReply(setup.store.get(id)!.telegramMessageId!, 'секретное-значение', 777);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    const got = await callJson(
+      app,
+      'POST',
+      '/mcp',
+      rpc('tools/call', { name: 'wait_answer', arguments: { id, wait: 0 } }),
+      auth,
+    );
+    const data = got.body.result.structuredContent;
+
+    expect(data.status).toBe('answered');
+    expect(data.answer).toBeUndefined();
+    expect(data.secret.url).toMatch(/^https:\/\/human4ai\.example\.com\/api\/secret\/\w{64}$/);
+    expect(data.secret.howTo).toContain('curl');
+    // Значения нет нигде в ответе — иначе оно осело бы в контексте модели.
+    expect(JSON.stringify(got.body)).not.toContain('секретное-значение');
+  });
+
+  it('обычный ответ по-прежнему приходит значением', async () => {
+    const setup = makeSetup();
+    const app = makeApp(setup);
+
+    const asked = await callJson(
+      app,
+      'POST',
+      '/mcp',
+      rpc('tools/call', { name: 'ask_user', arguments: { question: 'мержить?', wait: 0, timeout: 5 } }),
+      auth,
+    );
+    const id = asked.body.result.structuredContent.id;
+    await callJson(app, 'POST', `/alice/${SECRET}`, utterance('ответь коду да'));
+
+    const got = await callJson(
+      app,
+      'POST',
+      '/mcp',
+      rpc('tools/call', { name: 'wait_answer', arguments: { id, wait: 0 } }),
+      auth,
+    );
+    expect(got.body.result.structuredContent).toEqual({ status: 'answered', id, answer: 'да' });
+  });
+
   it('queue_status показывает порядок', async () => {
     const setup = makeSetup();
     const app = makeApp(setup);

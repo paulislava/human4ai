@@ -177,8 +177,25 @@ claude mcp add --scope user --transport http human4ai \
   https://human4ai.paulislava.space/mcp --header "Authorization: Bearer <MCP_TOKEN>"
 ```
 
-Инструменты: `ask_user` (channel `voice`/`telegram`), `wait_answer`, `cancel_ask`,
-`alice_say` (произнести уведомление на колонке, ответа не ждём), `queue_status`. Свой JSON-RPC, а не SDK: нужен один POST-эндпоинт в том же
+Инструменты: `ask_user` (channel `voice`/`telegram`, kind `text`/`secret`/`code`),
+`wait_answer`, `cancel_ask`, `alice_say` (произнести уведомление на колонке, ответа
+не ждём), `queue_status`.
+
+**Секрет в ответ MCP не отдаётся.** Значение в ответе осело бы в контексте модели
+и в истории сессии, поэтому вместо него приходит одноразовая ссылка:
+
+```json
+{ "status": "answered", "kind": "secret",
+  "secret": { "url": "https://…/api/secret/<токен>", "expiresInSec": 1800,
+              "howTo": "curl -s \"…\" -o <файл>" } }
+```
+
+`GET /api/secret/<токен>` отдаёт значение **текстом и один раз**, после чего токен
+и само значение стираются; ссылка живёт `SECRET_LINK_TTL_MS` (по умолчанию 30
+минут). Клиентский токен для неё не нужен — сам токен длинный, одноразовый и
+короткоживущий, зато сессия может забрать значение прямо в файл или в нужную
+команду, ничего не печатая. REST-клиентам (`/api/ask/solve`, `GET /api/ask/:id`)
+значение по-прежнему приходит сразу: там на другом конце скрипт, а не модель. Свой JSON-RPC, а не SDK: нужен один POST-эндпоинт в том же
 Express-приложении, SSE-поток не нужен — сервер сам ничего не инициирует.
 
 ### Голосовые эндпоинты (диагностика)

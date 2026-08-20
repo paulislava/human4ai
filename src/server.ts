@@ -99,6 +99,27 @@ export function createServer(
     res.json({ skipped: { id: skipped.id }, next: asks.store.voiceHead() });
   });
 
+  /**
+   * Забрать секрет по одноразовой ссылке. Токена достаточно: он длинный,
+   * живёт минуты и срабатывает один раз — зато сессии агента не нужен клиентский
+   * токен, а значение не проходит через контекст модели.
+   *
+   * Отдаём текстом, без JSON-обёртки: удобно сразу в файл или в команду.
+   */
+  app.get('/api/secret/:token', (req: Request, res: Response) => {
+    const value = asks.store.consumeSecret(String(req.params.token));
+    if (value === null) {
+      // Один ответ на всё: истёк, уже забрали, не существует. Разница наружу не
+      // нужна — она бы помогала перебирать токены.
+      res.status(404).type('text/plain; charset=utf-8').send('ссылка недействительна\n');
+      return;
+    }
+
+    // Ни в логи, ни в кэши: значение видит только тот, кто пришёл по ссылке.
+    res.setHeader('Cache-Control', 'no-store');
+    res.type('text/plain; charset=utf-8').send(value);
+  });
+
   app.use('/api/captcha', authenticate);
 
   /** Синхронно: ждём до timeout_ms и отдаём ответ (или null). */
