@@ -20,6 +20,9 @@
 # Только подключить агентов к уже работающей службе (на ноутбуке, где службы нет):
 #   ./start.sh --only-agents --public-url=https://human4ai.example.com --mcp-token=…
 #
+# Каких агентов настраивать, спрашивается в консоли; можно задать заранее:
+#   ./start.sh --agents=claude,codex,sokrat        (или --agents=all / --agents=none)
+#
 # Полезные флаги: --port=4020 --public-url=https://human4ai.example.com
 #                 --skip-mcp --skip-service --skip-stations --rebuild --help
 
@@ -41,6 +44,7 @@ TELEGRAM_TOKEN=""
 CHAT_ID=""
 YANDEX_TOKEN=""
 MCP_TOKEN_ARG=""
+AGENTS_ARG=""
 
 # ── аргументы ─────────────────────────────────────────────────────
 
@@ -52,6 +56,7 @@ for arg in "$@"; do
     --skip-stations) SKIP_STATIONS=1 ;;
     --only-agents) ONLY_AGENTS=1 ;;
     --mcp-token=*) MCP_TOKEN_ARG="${arg#*=}" ;;
+    --agents=*) AGENTS_ARG="${arg#*=}" ;;
     --rebuild) REBUILD=1 ;;
     --port=*) PORT="${arg#*=}" ;;
     --public-url=*) PUBLIC_URL="${arg#*=}" ;;
@@ -315,6 +320,88 @@ export_token_to_profile() {
   info "токен в $profile как HUMAN4AI_MCP_TOKEN"
 }
 
+# Все агенты, которых умеем настраивать. Порядок = порядок в меню.
+AGENT_IDS="claude codex sokrat openclaw"
+SOKRAT_HOME="${SOKRAT_HOME:-$HOME/.sokrat}"
+SOKRAT_BIN="${SOKRAT_BIN:-sokrat}"
+
+agent_label() {
+  case "$1" in
+    claude) printf 'Claude Code' ;;
+    codex) printf 'Codex' ;;
+    sokrat) printf 'Sokrat (обёртка над Codex)' ;;
+    openclaw) printf 'OpenClaw' ;;
+  esac
+}
+
+agent_available() {
+  case "$1" in
+    claude) command -v claude >/dev/null 2>&1 ;;
+    codex) command -v codex >/dev/null 2>&1 ;;
+    # Sokrat ставится и как свой бинарник, и просто своим каталогом-домом.
+    sokrat) command -v "${SOKRAT_BIN:-sokrat}" >/dev/null 2>&1 || [ -d "${SOKRAT_HOME:-$HOME/.sokrat}" ] ;;
+    openclaw) command -v openclaw >/dev/null 2>&1 ;;
+  esac
+}
+
+# Спросить, кому прописывать. Пусто -> все найденные, 0 -> никому.
+choose_agents() {
+  local found="" missing="" id n=0 line reply chosen=""
+
+  for id in $AGENT_IDS; do
+    if agent_available "$id"; then
+      found="$found $id"
+    else
+      missing="$missing $id"
+    fi
+  done
+
+  # Заранее заданный список важнее меню: так работает и CI, и повторный запуск.
+  if [ -n "$AGENTS_ARG" ]; then
+    case "$AGENTS_ARG" in
+      all) printf '%s' "$found"; return ;;
+      none) return ;;
+      *) printf '%s' "$(printf '%s' "$AGENTS_ARG" | tr ',' ' ')"; return ;;
+    esac
+  fi
+
+  [ -z "$found" ] && return
+  if [ "$INTERACTIVE" = "0" ]; then printf '%s' "$found"; return; fi
+
+  printf '\n    Кому прописать MCP и скилы:\n' >&2
+  for id in $found; do
+    n=$((n + 1))
+    printf '      %d) %s\n' "$n" "$(agent_label "$id")" >&2
+  done
+  for id in $missing; do
+    printf '         %s — не найден\n' "$(agent_label "$id")" >&2
+  done
+  printf '    Номера через запятую (Enter — все, 0 — никому): ' >&2
+  read -r reply < /dev/tty || reply=""
+
+  agents_from_reply "$reply" "$found"
+}
+
+# Ответ на меню -> список агентов. Отдельной функцией, чтобы её можно было
+# проверить без терминала: пусто — все, 0 — никого, «1,3» или «1 3» — по номерам.
+agents_from_reply() {
+  local reply="$1" found="$2" chosen="" id n num
+
+  case "$reply" in
+    "") printf '%s' "$found"; return ;;
+    0|none|нет) return ;;
+  esac
+
+  for num in $(printf '%s' "$reply" | tr ',' ' '); do
+    n=0
+    for id in $found; do
+      n=$((n + 1))
+      [ "$num" = "$n" ] && chosen="$chosen $id"
+    done
+  done
+  printf '%s' "$chosen"
+}
+
 if [ "$SKIP_MCP" = "0" ]; then
   say "Подключаю агентов: MCP и скилы"
   MCP_TOKEN="${MCP_TOKEN_ARG:-$(env_get MCP_TOKEN)}"
@@ -329,8 +416,17 @@ if [ "$SKIP_MCP" = "0" ]; then
   export_token_to_profile "$MCP_TOKEN"
   agents=0
 
+  SELECTED="$(choose_agents)"
+  if [ -z "$SELECTED" ]; then
+    info "агенты не выбраны — MCP и скилы никуда не ставлю"
+    SKIP_MCP=1
+  fi
+
+  # Отмечен ли агент в выборе.
+  chosen() { case " $SELECTED " in *" $1 "*) return 0 ;; *) return 1 ;; esac; }
+
   # Claude Code
-  if command -v claude >/dev/null 2>&1; then
+  if chosen claude; then
     claude mcp remove human4ai --scope user >/dev/null 2>&1 || true
     if claude mcp add --scope user --transport http human4ai "$MCP_URL" \
         --header "Authorization: Bearer $MCP_TOKEN" >/dev/null 2>&1; then
@@ -340,12 +436,10 @@ if [ "$SKIP_MCP" = "0" ]; then
     fi
     copy_skills "$HOME/.claude/skills"
     agents=$((agents + 1))
-  else
-    info "Claude Code не найден — пропускаю"
   fi
 
   # Codex
-  if command -v codex >/dev/null 2>&1; then
+  if chosen codex; then
     codex mcp remove human4ai >/dev/null 2>&1 || true
     if codex mcp add human4ai --url "$MCP_URL" \
         --bearer-token-env-var HUMAN4AI_MCP_TOKEN >/dev/null 2>&1; then
@@ -355,12 +449,10 @@ if [ "$SKIP_MCP" = "0" ]; then
     fi
     copy_skills "$HOME/.codex/skills"
     agents=$((agents + 1))
-  else
-    info "Codex не найден — пропускаю"
   fi
 
   # OpenClaw
-  if command -v openclaw >/dev/null 2>&1; then
+  if chosen openclaw; then
     openclaw mcp remove human4ai >/dev/null 2>&1 || true
     if openclaw mcp add human4ai --url "$MCP_URL" --transport streamable-http \
         --header "Authorization=Bearer $MCP_TOKEN" >/dev/null 2>&1; then
@@ -369,16 +461,12 @@ if [ "$SKIP_MCP" = "0" ]; then
       warn "OpenClaw: подключить MCP не удалось (openclaw mcp add)"
     fi
     agents=$((agents + 1))
-  else
-    info "OpenClaw не найден — пропускаю"
   fi
 
   # Sokrat — обёртка над Codex, поэтому настраивается тем же CLI: у него свой
   # дом (CODEX_HOME), а формат конфига codex'овый. Пробуем два пути: свой
   # бинарник, если он умеет `mcp add`, иначе codex с домом sokrat'а.
-  SOKRAT_HOME="${SOKRAT_HOME:-$HOME/.sokrat}"
-  SOKRAT_BIN="${SOKRAT_BIN:-sokrat}"
-  if command -v "$SOKRAT_BIN" >/dev/null 2>&1 || [ -d "$SOKRAT_HOME" ]; then
+  if chosen sokrat; then
     sokrat_done=0
 
     if command -v "$SOKRAT_BIN" >/dev/null 2>&1; then
@@ -402,11 +490,9 @@ if [ "$SKIP_MCP" = "0" ]; then
     [ "$sokrat_done" = "1" ] || warn "Sokrat: подключить MCP не удалось — см. docs/MCP.md"
     copy_skills "${SOKRAT_SKILLS_DIR:-$SOKRAT_HOME/skills}"
     agents=$((agents + 1))
-  else
-    info "Sokrat не найден — пропускаю"
   fi
 
-  [ "$agents" = "0" ] && warn "ни одного агента не нашлось: MCP и скилы никуда не поставлены"
+  [ "$agents" = "0" ] && warn "ни один агент не настроен"
 fi
 
 # ── 7. Что осталось руками ────────────────────────────────────────

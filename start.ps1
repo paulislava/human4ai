@@ -21,7 +21,9 @@ param(
   [string]$PublicUrl = '',
   [string]$TelegramToken = '',
   [string]$ChatId = '',
-  [string]$YandexToken = ''
+  [string]$YandexToken = '',
+  # claude,codex,sokrat,openclaw | all | none. Пусто -> спросить в консоли.
+  [string]$Agents = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -191,6 +193,45 @@ if (-not $SkipMcp) {
   if (-not $base) { $base = "http://127.0.0.1:$hostPort" }
   $mcpUrl = "$($base.TrimEnd('/'))/mcp"
 
+  # Кому ставить: меню с множественным выбором, либо -Agents claude,codex,sokrat
+  $sokratHomePre = if ($env:SOKRAT_HOME) { $env:SOKRAT_HOME } else { Join-Path $env:USERPROFILE '.sokrat' }
+  $available = @()
+  if (Get-Command claude -ErrorAction SilentlyContinue) { $available += 'claude' }
+  if (Get-Command codex -ErrorAction SilentlyContinue) { $available += 'codex' }
+  if ((Get-Command ($env:SOKRAT_BIN ?? 'sokrat') -ErrorAction SilentlyContinue) -or (Test-Path $sokratHomePre)) { $available += 'sokrat' }
+  if (Get-Command openclaw -ErrorAction SilentlyContinue) { $available += 'openclaw' }
+
+  $labels = @{ claude = 'Claude Code'; codex = 'Codex'; sokrat = 'Sokrat (обёртка над Codex)'; openclaw = 'OpenClaw' }
+  $selected = @()
+
+  if ($Agents) {
+    $selected = if ($Agents -eq 'all') { $available } elseif ($Agents -eq 'none') { @() } else { $Agents -split '[, ]+' }
+  } elseif ($NonInteractive -or $available.Count -eq 0) {
+    $selected = $available
+  } else {
+    Write-Host ''
+    Write-Host '    Кому прописать MCP и скилы:'
+    for ($i = 0; $i -lt $available.Count; $i++) {
+      Write-Host "      $($i + 1)) $($labels[$available[$i]])"
+    }
+    $reply = Read-Host '    Номера через запятую (Enter — все, 0 — никому)'
+    if (-not $reply) { $selected = $available }
+    elseif ($reply -eq '0') { $selected = @() }
+    else {
+      foreach ($num in ($reply -split '[, ]+')) {
+        $idx = 0
+        if ([int]::TryParse($num, [ref]$idx) -and $idx -ge 1 -and $idx -le $available.Count) {
+          $selected += $available[$idx - 1]
+        }
+      }
+    }
+  }
+
+  if ($selected.Count -eq 0) {
+    Info 'агенты не выбраны — MCP и скилы никуда не ставлю'
+    $SkipMcp = $true
+  }
+
   # Токен и в переменной окружения: Codex умеет bearer только так, а ручные
   # вызовы curl потом проще. 'User' — чтобы жил после перезапуска терминала.
   [Environment]::SetEnvironmentVariable('HUMAN4AI_MCP_TOKEN', $token, 'User')
@@ -198,34 +239,34 @@ if (-not $SkipMcp) {
   Info 'токен в переменной пользователя HUMAN4AI_MCP_TOKEN'
   $agents = 0
 
-  if (Get-Command claude -ErrorAction SilentlyContinue) {
+  if ($selected -contains 'claude') {
     & claude mcp remove human4ai --scope user *> $null
     & claude mcp add --scope user --transport http human4ai $mcpUrl --header "Authorization: Bearer $token" *> $null
     if ($LASTEXITCODE -eq 0) { Info 'Claude Code: MCP подключён' } else { Warn 'Claude Code: MCP не удалось' }
     Copy-Skills (Join-Path $env:USERPROFILE '.claude\skills')
     $agents++
-  } else { Info 'Claude Code не найден — пропускаю' }
+  }
 
-  if (Get-Command codex -ErrorAction SilentlyContinue) {
+  if ($selected -contains 'codex') {
     & codex mcp remove human4ai *> $null
     & codex mcp add human4ai --url $mcpUrl --bearer-token-env-var HUMAN4AI_MCP_TOKEN *> $null
     if ($LASTEXITCODE -eq 0) { Info 'Codex: MCP подключён' } else { Warn 'Codex: MCP не удалось' }
     Copy-Skills (Join-Path $env:USERPROFILE '.codex\skills')
     $agents++
-  } else { Info 'Codex не найден — пропускаю' }
+  }
 
-  if (Get-Command openclaw -ErrorAction SilentlyContinue) {
+  if ($selected -contains 'openclaw') {
     & openclaw mcp remove human4ai *> $null
     & openclaw mcp add human4ai --url $mcpUrl --transport streamable-http --header "Authorization=Bearer $token" *> $null
     if ($LASTEXITCODE -eq 0) { Info 'OpenClaw: MCP подключён' } else { Warn 'OpenClaw: MCP не удалось' }
     $agents++
-  } else { Info 'OpenClaw не найден — пропускаю' }
+  }
 
   # Sokrat — обёртка над Codex: конфиг у него codex'овый, только дом свой.
   # Пробуем его бинарник, иначе codex с CODEX_HOME=дом sokrat'а.
   $sokratBin = if ($env:SOKRAT_BIN) { $env:SOKRAT_BIN } else { 'sokrat' }
   $sokratHome = if ($env:SOKRAT_HOME) { $env:SOKRAT_HOME } else { Join-Path $env:USERPROFILE '.sokrat' }
-  if ((Get-Command $sokratBin -ErrorAction SilentlyContinue) -or (Test-Path $sokratHome)) {
+  if ($selected -contains 'sokrat') {
     $sokratDone = $false
 
     if (Get-Command $sokratBin -ErrorAction SilentlyContinue) {
@@ -247,9 +288,9 @@ if (-not $SkipMcp) {
     $skillsDir = if ($env:SOKRAT_SKILLS_DIR) { $env:SOKRAT_SKILLS_DIR } else { Join-Path $sokratHome 'skills' }
     Copy-Skills $skillsDir
     $agents++
-  } else { Info 'Sokrat не найден — пропускаю' }
+  }
 
-  if ($agents -eq 0) { Warn 'ни одного агента не нашлось: MCP и скилы никуда не поставлены' }
+  if ($agents -eq 0) { Warn 'ни один агент не настроен' }
 }
 
 # ── 7. Что осталось ───────────────────────────────────────────────
