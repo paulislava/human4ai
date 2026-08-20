@@ -1,6 +1,38 @@
 import axios from 'axios';
 import { config } from './config';
 
+/**
+ * Общие настройки запросов к Bot API. Прокси задаётся одной переменной
+ * (TELEGRAM_PROXY): из RU-сети api.telegram.org недоступен, а axios умеет
+ * CONNECT сам — отдельный агент для этого не нужен.
+ */
+function requestOptions<T extends object>(options: T): T {
+  const proxy = config.telegram.proxy;
+  if (!proxy.url) return options;
+
+  return {
+    ...options,
+    proxy: {
+      protocol: proxy.protocol,
+      host: proxy.host,
+      port: proxy.port,
+      ...(proxy.authHeader
+        ? {
+            auth: (() => {
+              const [username, ...rest] = Buffer.from(
+                proxy.authHeader.replace(/^Basic\s+/i, ''),
+                'base64',
+              )
+                .toString()
+                .split(':');
+              return { username, password: rest.join(':') };
+            })(),
+          }
+        : {}),
+    },
+  } as T;
+}
+
 export interface IncomingPollAnswer {
   pollId: string;
   /** Индексы выбранных вариантов; пустой массив — выбор отозвали. */
@@ -72,7 +104,7 @@ export class TelegramClient {
     const response = await axios.post(
       `${this.apiUrl()}/sendPhoto`,
       form,
-      { timeout: 30_000 },
+      requestOptions({ timeout: 30_000 }),
     );
 
     const messageId = response.data?.result?.message_id;
@@ -120,7 +152,7 @@ export class TelegramClient {
             }
           : {}),
       },
-      { timeout: 30_000 },
+      requestOptions({ timeout: 30_000 }),
     );
 
     const messageId = response.data?.result?.message_id;
@@ -162,7 +194,7 @@ export class TelegramClient {
         is_anonymous: false,
         allows_multiple_answers: false,
       },
-      { timeout: 30_000 },
+      requestOptions({ timeout: 30_000 }),
     );
 
     const messageId = response.data?.result?.message_id;
@@ -178,7 +210,7 @@ export class TelegramClient {
     await axios.post(
       `${this.apiUrl()}/sendMessage`,
       { chat_id: config.telegram.chatId, text },
-      { timeout: 15_000 },
+      requestOptions({ timeout: 15_000 }),
     );
   }
 
@@ -198,7 +230,7 @@ export class TelegramClient {
     const loop = async (): Promise<void> => {
       while (this.polling) {
         try {
-          const response = await axios.get(`${this.apiUrl()}/getUpdates`, {
+          const response = await axios.get(`${this.apiUrl()}/getUpdates`, requestOptions({
             params: {
               offset: this.offset,
               timeout: 30,
@@ -207,7 +239,7 @@ export class TelegramClient {
               allowed_updates: ['message', 'poll_answer'],
             },
             timeout: 40_000,
-          });
+          }));
 
           for (const update of response.data?.result ?? []) {
             this.offset = update.update_id + 1;
@@ -267,7 +299,7 @@ export class TelegramClient {
           message_id: messageId,
           reaction: emoji ? [{ type: 'emoji', emoji }] : [],
         },
-        { timeout: 15_000 },
+        requestOptions({ timeout: 15_000 }),
       );
     } catch (error) {
       console.error('Telegram setMessageReaction:', (error as Error).message);
@@ -288,7 +320,7 @@ export class TelegramClient {
       await axios.post(
         `${this.apiUrl()}/deleteMessage`,
         { chat_id: config.telegram.chatId, message_id: messageId },
-        { timeout: 15_000 },
+        requestOptions({ timeout: 15_000 }),
       );
     } catch (error) {
       console.error('Telegram deleteMessage:', (error as Error).message);
@@ -311,7 +343,7 @@ export class TelegramClient {
           text,
           disable_web_page_preview: true,
         },
-        { timeout: 15_000 },
+        requestOptions({ timeout: 15_000 }),
       );
     } catch (error) {
       console.error('Telegram editMessageText:', (error as Error).message);
@@ -330,10 +362,10 @@ export class TelegramClient {
     if (this.forum !== null) return this.forum;
 
     try {
-      const response = await axios.get(`${this.apiUrl()}/getChat`, {
-        params: { chat_id: config.telegram.chatId },
-        timeout: 15_000,
-      });
+      const response = await axios.get(
+        `${this.apiUrl()}/getChat`,
+        requestOptions({ params: { chat_id: config.telegram.chatId }, timeout: 15_000 }),
+      );
       this.forum = Boolean(response.data?.result?.is_forum);
     } catch (error) {
       console.error('Telegram getChat:', (error as Error).message);
@@ -359,7 +391,7 @@ export class TelegramClient {
         `${this.apiUrl()}/createForumTopic`,
         // Лимит Telegram — 128 символов.
         { chat_id: config.telegram.chatId, name: name.slice(0, 128) },
-        { timeout: 15_000 },
+        requestOptions({ timeout: 15_000 }),
       );
 
       const threadId = response.data?.result?.message_thread_id;
@@ -388,7 +420,7 @@ export class TelegramClient {
       await axios.post(
         `${this.apiUrl()}/closeForumTopic`,
         { chat_id: config.telegram.chatId, message_thread_id: threadId },
-        { timeout: 15_000 },
+        requestOptions({ timeout: 15_000 }),
       );
     } catch (error) {
       console.error('Telegram closeForumTopic:', (error as Error).message);

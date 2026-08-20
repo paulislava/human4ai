@@ -103,12 +103,59 @@ if ($PublicUrl) { Set-EnvValue 'PUBLIC_URL' $PublicUrl }
 Ask-IfMissing 'TELEGRAM_CAPTCHA_BOT_TOKEN' `
   'Токен Telegram-бота (создать: @BotFather -> /newbot; можно оставить пустым — вопросы в Telegram выключатся)' `
   $TelegramToken
-Ask-IfMissing 'TELEGRAM_CHAT_ID' `
-  'Твой chat_id (напиши боту сообщение, потом: node scripts\telegram-chat-id.mjs)' `
-  $ChatId
-Ask-IfMissing 'VOICE_YANDEX_TOKEN' `
-  'OAuth-токен Яндекса со скоупом «Умный дом» — нужен только для озвучки (docs/ALICE.md)' `
-  $YandexToken
+if ($ChatId) { Set-EnvValue 'TELEGRAM_CHAT_ID' $ChatId }
+
+# chat_id не спрашиваем: человек его не знает. Подключаемся к боту и ждём, пока
+# ему напишут — id берём из этого сообщения.
+if (-not (Get-EnvValue 'TELEGRAM_CHAT_ID') -and (Get-EnvValue 'TELEGRAM_CAPTCHA_BOT_TOKEN')) {
+  if (Get-Command node -ErrorAction SilentlyContinue) {
+    Say 'Определяю chat_id'
+    # Обновления Telegram отдаёт одному потребителю: запущенная служба забрала бы
+    # их себе, поэтому на время определения останавливаем контейнер.
+    $running = & docker compose ps --status running --quiet 2>$null
+    if ($running) { Info 'останавливаю контейнер, чтобы не перехватывал обновления'; & docker compose stop *> $null }
+
+    $env:TELEGRAM_CAPTCHA_BOT_TOKEN = Get-EnvValue 'TELEGRAM_CAPTCHA_BOT_TOKEN'
+    $chatId = & node (Join-Path $Root 'scripts\telegram-chat-id.mjs') "--wait=$(if ($env:CHAT_ID_WAIT) { $env:CHAT_ID_WAIT } else { 180 })"
+    if ($LASTEXITCODE -eq 0 -and $chatId) {
+      Set-EnvValue 'TELEGRAM_CHAT_ID' "$chatId"
+      Info "chat_id: $chatId"
+    } else {
+      Warn 'chat_id не определился — можно задать позже: -ChatId <id>'
+    }
+  } else {
+    Warn 'нет node: chat_id не определить автоматически, задай -ChatId <id>'
+  }
+}
+
+if ($YandexToken) { Set-EnvValue 'VOICE_YANDEX_TOKEN' $YandexToken }
+
+# Токен Яндекса выдаёт только OAuth в браузере — открываем страницу и просим
+# вставить значение из адресной строки.
+if (-not (Get-EnvValue 'VOICE_YANDEX_TOKEN') -and -not $NonInteractive) {
+  Say 'Токен Яндекса для озвучки на колонке'
+  Info 'нужен OAuth-токен со скоупами «Умный дом» (iot:view, iot:control)'
+
+  $clientId = Get-EnvValue 'YANDEX_OAUTH_CLIENT_ID'
+  if (-not $clientId) {
+    Info 'если приложения ещё нет — создай: https://oauth.yandex.ru/client/new'
+    Info '  тип «Веб-сервисы», Redirect URI https://oauth.yandex.ru/verification_code,'
+    Info '  скоупы «Умный дом: просмотр и управление»'
+    $clientId = Read-Host '    ID приложения (Enter — вставлю токен вручную)'
+    if ($clientId) { Set-EnvValue 'YANDEX_OAUTH_CLIENT_ID' $clientId }
+  }
+
+  if ($clientId) {
+    Info 'открываю страницу выдачи токена…'
+    Start-Process "https://oauth.yandex.ru/authorize?response_type=token&client_id=$clientId"
+    Info 'после разрешения токен будет в адресной строке после #access_token='
+  }
+
+  $pasted = Read-Host '    Вставь токен (Enter — пропустить, озвучка выключится)'
+  # Из адресной строки часто копируют целиком — вытащим токен сами.
+  if ($pasted -match 'access_token=([^&]+)') { $pasted = $Matches[1] }
+  if ($pasted) { Set-EnvValue 'VOICE_YANDEX_TOKEN' $pasted }
+}
 
 # ── 3. Колонки ────────────────────────────────────────────────────
 

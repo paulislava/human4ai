@@ -51,6 +51,12 @@ export const config = {
     /** Отдельный бот только под капчи, чтобы не смешивать с существующими. */
     botToken: process.env.TELEGRAM_CAPTCHA_BOT_TOKEN ?? '',
     chatId: process.env.TELEGRAM_CHAT_ID ?? '',
+    /**
+     * Прокси к Bot API: в RU-сегменте api.telegram.org закрыт, и без прокси
+     * служба просто не увидит ни ответов, ни возможности спросить.
+     * Формат http://user:pass@host:port. Пусто -> ходим напрямую.
+     */
+    proxy: parseProxy(process.env.TELEGRAM_PROXY ?? ''),
   },
 
   /** Сколько ждать ответа человека, если клиент не указал свой таймаут. */

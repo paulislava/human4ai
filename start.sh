@@ -172,12 +172,75 @@ fi
 ask_if_missing TELEGRAM_CAPTCHA_BOT_TOKEN \
   "Токен Telegram-бота (создать: @BotFather -> /newbot; можно оставить пустым — тогда вопросы в Telegram выключены)" \
   "$TELEGRAM_TOKEN"
-ask_if_missing TELEGRAM_CHAT_ID \
-  "Твой chat_id (напиши боту любое сообщение и запусти: ./start.sh --chat-id=\$(scripts/telegram-chat-id.sh))" \
-  "$CHAT_ID"
-ask_if_missing VOICE_YANDEX_TOKEN \
-  "OAuth-токен Яндекса со скоупом «Умный дом» — нужен только для озвучки на колонке (см. docs/ALICE.md)" \
-  "$YANDEX_TOKEN"
+[ -n "$CHAT_ID" ] && env_set TELEGRAM_CHAT_ID "$CHAT_ID"
+
+# chat_id не спрашиваем: человек его обычно не знает. Подключаемся к боту и
+# ждём, пока ему напишут — id берём из этого сообщения.
+if [ -z "$(env_get TELEGRAM_CHAT_ID)" ] && [ -n "$(env_get TELEGRAM_CAPTCHA_BOT_TOKEN)" ]; then
+  if command -v node >/dev/null 2>&1; then
+    say "Определяю chat_id"
+    # Обновления Telegram отдаёт одному потребителю: если служба уже поднята, она
+    # забирает их себе — на время определения останавливаем контейнер (ниже он
+    # всё равно поднимается заново).
+    if with_timeout 20 docker compose ps --status running --quiet 2>/dev/null | grep -q .; then
+      info "останавливаю контейнер, чтобы не перехватывал обновления"
+      docker compose stop >/dev/null 2>&1 || true
+    fi
+
+    if chat_id="$(TELEGRAM_CAPTCHA_BOT_TOKEN="$(env_get TELEGRAM_CAPTCHA_BOT_TOKEN)" \
+        node "$ROOT/scripts/telegram-chat-id.mjs" --wait="${CHAT_ID_WAIT:-180}")"; then
+      env_set TELEGRAM_CHAT_ID "$chat_id"
+      info "chat_id: $chat_id"
+    else
+      warn "chat_id не определился — можно задать позже: ./start.sh --chat-id=<id>"
+    fi
+  else
+    warn "нет node: chat_id не определить автоматически, задай ./start.sh --chat-id=<id>"
+  fi
+fi
+
+[ -n "$YANDEX_TOKEN" ] && env_set VOICE_YANDEX_TOKEN "$YANDEX_TOKEN"
+
+# Открыть ссылку в браузере той ОС, где запущено.
+open_url() {
+  case "$(uname -s)" in
+    Darwin) open "$1" >/dev/null 2>&1 ;;
+    Linux) xdg-open "$1" >/dev/null 2>&1 || true ;;
+    *) printf '    открой в браузере: %s\n' "$1" ;;
+  esac
+}
+
+# Токен Яндекса выдаёт только OAuth в браузере — автоматически его не добыть.
+# Поэтому открываем страницу выдачи и просим вставить значение из адресной строки.
+if [ -z "$(env_get VOICE_YANDEX_TOKEN)" ] && [ "$INTERACTIVE" = "1" ]; then
+  say "Токен Яндекса для озвучки на колонке"
+  info "нужен OAuth-токен со скоупами «Умный дом» (iot:view, iot:control)"
+
+  client_id="$(env_get YANDEX_OAUTH_CLIENT_ID)"
+  if [ -z "$client_id" ]; then
+    info "если приложения ещё нет — создай: https://oauth.yandex.ru/client/new"
+    info "  тип «Веб-сервисы», Redirect URI https://oauth.yandex.ru/verification_code,"
+    info "  скоупы «Умный дом: просмотр и управление»"
+    printf '    ID приложения (Enter — вставлю токен вручную): '
+    read -r client_id < /dev/tty || client_id=""
+    [ -n "$client_id" ] && env_set YANDEX_OAUTH_CLIENT_ID "$client_id"
+  fi
+
+  if [ -n "$client_id" ]; then
+    auth_url="https://oauth.yandex.ru/authorize?response_type=token&client_id=$client_id"
+    info "открываю страницу выдачи токена…"
+    open_url "$auth_url"
+    info "после разрешения токен будет в адресной строке после #access_token="
+  fi
+
+  printf '    Вставь токен (Enter — пропустить, озвучка выключится): '
+  read -r pasted < /dev/tty || pasted=""
+  # Из адресной строки часто копируют целиком — вытащим токен сами.
+  case "$pasted" in
+    *access_token=*) pasted="$(printf '%s' "$pasted" | sed -E 's/.*access_token=([^&]+).*/\1/')" ;;
+  esac
+  [ -n "$pasted" ] && env_set VOICE_YANDEX_TOKEN "$pasted"
+fi
 fi
 
 # ── 3. Колонки ────────────────────────────────────────────────────
@@ -193,6 +256,22 @@ if [ "$ONLY_AGENTS" = "0" ] && [ "$SKIP_STATIONS" = "0" ] && [ -n "$(env_get VOI
       done <<< "$found"
     else
       warn "колонок не нашлось — озвучка будет ходить через прокси (VOICE_PC_PROXY) или молчать"
+    fi
+
+    # Токен Яндекса проверяем сразу: у него два разных API, и «не тот скоуп»
+    # иначе выяснится только когда колонка промолчит в ответ на первый вопрос.
+    first="$(env_get VOICE_STATIONS)"
+    if [ -n "$first" ]; then
+      dev="$(printf '%s' "$first" | cut -d, -f1 | cut -d: -f1)"
+      platform="$(printf '%s' "$first" | cut -d, -f1 | cut -d: -f4)"
+      code="$(curl -s -o /dev/null -w '%{http_code}' -m 15 \
+        -H "Authorization: Oauth $(env_get VOICE_YANDEX_TOKEN)" \
+        "https://quasar.yandex.net/glagol/token?device_id=$dev&platform=$platform" || echo 000)"
+      case "$code" in
+        200) info "токен Яндекса годится (glagol отвечает 200)" ;;
+        401|403) warn "токен Яндекса не подходит ($code): нужен скоуп «Умный дом», см. docs/ALICE.md" ;;
+        *) warn "проверить токен Яндекса не удалось (HTTP $code) — возможно, нет сети" ;;
+      esac
     fi
   else
     warn "нет node на хосте: пропускаю поиск колонок (можно задать VOICE_STATIONS вручную)"
@@ -507,7 +586,7 @@ info "логи:     docker compose logs -f"
 info "остановить: docker compose stop   |  обновить: git pull && ./start.sh"
 
 if [ -z "$(env_get TELEGRAM_CHAT_ID)" ]; then
-  warn "TELEGRAM_CHAT_ID пуст: напиши боту сообщение и запусти bash scripts/telegram-chat-id.sh"
+  warn "TELEGRAM_CHAT_ID пуст: запусти ./start.sh снова и напиши боту, когда попросит"
 fi
 if [ -n "$(env_get VOICE_YANDEX_TOKEN)" ]; then
   webhook="$(env_get PUBLIC_URL)"
