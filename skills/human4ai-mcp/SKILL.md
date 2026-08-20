@@ -55,6 +55,35 @@ codex mcp list
 
 Windows: `[Environment]::SetEnvironmentVariable('HUMAN4AI_MCP_TOKEN', $token, 'User')`.
 
+## Sokrat
+
+Sokrat — обёртка над Codex, поэтому конфиг у него codex'овый, отличается только
+дом. `start.sh` пробует два пути по порядку:
+
+```bash
+sokrat mcp add human4ai --url "$MCP_URL" --bearer-token-env-var HUMAN4AI_MCP_TOKEN
+# если своей команды нет — тем же codex, но с домом sokrat'а:
+CODEX_HOME=~/.sokrat codex mcp add human4ai --url "$MCP_URL" \
+  --bearer-token-env-var HUMAN4AI_MCP_TOKEN
+```
+
+Скилы копируются в `~/.sokrat/skills`. Пути переопределяются переменными:
+
+```bash
+SOKRAT_HOME=~/.sokrat SOKRAT_BIN=sokrat SOKRAT_SKILLS_DIR=~/.sokrat/skills \
+  ./start.sh --skip-service --skip-stations
+```
+
+Токен bearer и здесь берётся из переменной окружения `HUMAN4AI_MCP_TOKEN` —
+её прописывает установщик в профиль оболочки (на Windows — в переменные
+пользователя).
+
+## Другие агенты
+
+Если агент настраивается правкой своего конфига, а не CLI, пропиши сервер в его
+формате: URL `<PUBLIC_URL>/mcp`, транспорт streamable-http, заголовок
+`Authorization: Bearer <MCP_TOKEN>`.
+
 ## OpenClaw
 
 ```bash

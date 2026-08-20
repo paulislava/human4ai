@@ -173,35 +173,83 @@ if (-not $SkipService) {
 
 # ── 6. MCP в агентов ──────────────────────────────────────────────
 
+function Copy-Skills([string]$target) {
+  # Скилы — каталоги с SKILL.md: «установка» это копирование туда, откуда агент их читает.
+  New-Item -ItemType Directory -Force -Path $target | Out-Null
+  foreach ($skill in Get-ChildItem (Join-Path $Root 'skills') -Directory) {
+    $dest = Join-Path $target $skill.Name
+    if (Test-Path $dest) { Remove-Item $dest -Recurse -Force }
+    Copy-Item $skill.FullName $dest -Recurse
+  }
+  Info "скилы -> $target"
+}
+
 if (-not $SkipMcp) {
-  Say 'Подключаю MCP к агентам'
+  Say 'Подключаю агентов: MCP и скилы'
   $token = Get-EnvValue 'MCP_TOKEN'
   $base = Get-EnvValue 'PUBLIC_URL'
   if (-not $base) { $base = "http://127.0.0.1:$hostPort" }
   $mcpUrl = "$($base.TrimEnd('/'))/mcp"
 
+  # Токен и в переменной окружения: Codex умеет bearer только так, а ручные
+  # вызовы curl потом проще. 'User' — чтобы жил после перезапуска терминала.
+  [Environment]::SetEnvironmentVariable('HUMAN4AI_MCP_TOKEN', $token, 'User')
+  $env:HUMAN4AI_MCP_TOKEN = $token
+  Info 'токен в переменной пользователя HUMAN4AI_MCP_TOKEN'
+  $agents = 0
+
   if (Get-Command claude -ErrorAction SilentlyContinue) {
     & claude mcp remove human4ai --scope user *> $null
     & claude mcp add --scope user --transport http human4ai $mcpUrl --header "Authorization: Bearer $token" *> $null
-    if ($LASTEXITCODE -eq 0) { Info 'Claude Code: human4ai подключён' } else { Warn 'Claude Code: не удалось' }
+    if ($LASTEXITCODE -eq 0) { Info 'Claude Code: MCP подключён' } else { Warn 'Claude Code: MCP не удалось' }
+    Copy-Skills (Join-Path $env:USERPROFILE '.claude\skills')
+    $agents++
   } else { Info 'Claude Code не найден — пропускаю' }
 
   if (Get-Command codex -ErrorAction SilentlyContinue) {
-    # Codex читает bearer только из переменной окружения — прописываем её
-    # пользователю навсегда, иначе после перезапуска терминала MCP отвалится.
-    [Environment]::SetEnvironmentVariable('HUMAN4AI_MCP_TOKEN', $token, 'User')
-    $env:HUMAN4AI_MCP_TOKEN = $token
     & codex mcp remove human4ai *> $null
     & codex mcp add human4ai --url $mcpUrl --bearer-token-env-var HUMAN4AI_MCP_TOKEN *> $null
-    if ($LASTEXITCODE -eq 0) { Info 'Codex: human4ai подключён (токен в переменной HUMAN4AI_MCP_TOKEN)' }
-    else { Warn 'Codex: не удалось' }
+    if ($LASTEXITCODE -eq 0) { Info 'Codex: MCP подключён' } else { Warn 'Codex: MCP не удалось' }
+    Copy-Skills (Join-Path $env:USERPROFILE '.codex\skills')
+    $agents++
   } else { Info 'Codex не найден — пропускаю' }
 
   if (Get-Command openclaw -ErrorAction SilentlyContinue) {
     & openclaw mcp remove human4ai *> $null
     & openclaw mcp add human4ai --url $mcpUrl --transport streamable-http --header "Authorization=Bearer $token" *> $null
-    if ($LASTEXITCODE -eq 0) { Info 'OpenClaw: human4ai подключён' } else { Warn 'OpenClaw: не удалось' }
+    if ($LASTEXITCODE -eq 0) { Info 'OpenClaw: MCP подключён' } else { Warn 'OpenClaw: MCP не удалось' }
+    $agents++
   } else { Info 'OpenClaw не найден — пропускаю' }
+
+  # Sokrat — обёртка над Codex: конфиг у него codex'овый, только дом свой.
+  # Пробуем его бинарник, иначе codex с CODEX_HOME=дом sokrat'а.
+  $sokratBin = if ($env:SOKRAT_BIN) { $env:SOKRAT_BIN } else { 'sokrat' }
+  $sokratHome = if ($env:SOKRAT_HOME) { $env:SOKRAT_HOME } else { Join-Path $env:USERPROFILE '.sokrat' }
+  if ((Get-Command $sokratBin -ErrorAction SilentlyContinue) -or (Test-Path $sokratHome)) {
+    $sokratDone = $false
+
+    if (Get-Command $sokratBin -ErrorAction SilentlyContinue) {
+      & $sokratBin mcp remove human4ai *> $null
+      & $sokratBin mcp add human4ai --url $mcpUrl --bearer-token-env-var HUMAN4AI_MCP_TOKEN *> $null
+      if ($LASTEXITCODE -eq 0) { Info "Sokrat: MCP подключён ($sokratBin mcp add)"; $sokratDone = $true }
+    }
+
+    if (-not $sokratDone -and (Get-Command codex -ErrorAction SilentlyContinue) -and (Test-Path $sokratHome)) {
+      $prevHome = $env:CODEX_HOME
+      $env:CODEX_HOME = $sokratHome
+      & codex mcp remove human4ai *> $null
+      & codex mcp add human4ai --url $mcpUrl --bearer-token-env-var HUMAN4AI_MCP_TOKEN *> $null
+      if ($LASTEXITCODE -eq 0) { Info "Sokrat: MCP подключён (codex с CODEX_HOME=$sokratHome)"; $sokratDone = $true }
+      $env:CODEX_HOME = $prevHome
+    }
+
+    if (-not $sokratDone) { Warn 'Sokrat: подключить MCP не удалось — см. docs/MCP.md' }
+    $skillsDir = if ($env:SOKRAT_SKILLS_DIR) { $env:SOKRAT_SKILLS_DIR } else { Join-Path $sokratHome 'skills' }
+    Copy-Skills $skillsDir
+    $agents++
+  } else { Info 'Sokrat не найден — пропускаю' }
+
+  if ($agents -eq 0) { Warn 'ни одного агента не нашлось: MCP и скилы никуда не поставлены' }
 }
 
 # ── 7. Что осталось ───────────────────────────────────────────────

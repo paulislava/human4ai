@@ -17,6 +17,9 @@
 # Неинтерактивно (для CI и повторной настройки):
 #   ./start.sh --non-interactive --telegram-token=… --chat-id=… --yandex-token=…
 #
+# Только подключить агентов к уже работающей службе (на ноутбуке, где службы нет):
+#   ./start.sh --only-agents --public-url=https://human4ai.example.com --mcp-token=…
+#
 # Полезные флаги: --port=4020 --public-url=https://human4ai.example.com
 #                 --skip-mcp --skip-service --skip-stations --rebuild --help
 
@@ -31,11 +34,13 @@ SKIP_MCP=0
 SKIP_SERVICE=0
 SKIP_STATIONS=0
 REBUILD=0
+ONLY_AGENTS=0
 PORT=""
 PUBLIC_URL=""
 TELEGRAM_TOKEN=""
 CHAT_ID=""
 YANDEX_TOKEN=""
+MCP_TOKEN_ARG=""
 
 # ── аргументы ─────────────────────────────────────────────────────
 
@@ -45,6 +50,8 @@ for arg in "$@"; do
     --skip-mcp) SKIP_MCP=1 ;;
     --skip-service) SKIP_SERVICE=1 ;;
     --skip-stations) SKIP_STATIONS=1 ;;
+    --only-agents) ONLY_AGENTS=1 ;;
+    --mcp-token=*) MCP_TOKEN_ARG="${arg#*=}" ;;
     --rebuild) REBUILD=1 ;;
     --port=*) PORT="${arg#*=}" ;;
     --public-url=*) PUBLIC_URL="${arg#*=}" ;;
@@ -114,7 +121,10 @@ ask_if_missing() {
 }
 
 # ── 1. Docker ─────────────────────────────────────────────────────
+# В режиме --only-agents служба не наша забота: она уже где-то работает, здесь
+# нужно лишь прописать её агентам.
 
+if [ "$ONLY_AGENTS" = "0" ]; then
 say "Проверяю Docker"
 if ! command -v docker >/dev/null 2>&1; then
   case "$(uname -s)" in
@@ -132,9 +142,11 @@ fi
 with_timeout 15 docker compose version >/dev/null 2>&1 \
   || { warn "Нужен docker compose v2 (docker compose version)"; exit 1; }
 info "Docker на месте: $(docker --version | cut -d, -f1)"
+fi
 
 # ── 2. .env ───────────────────────────────────────────────────────
 
+if [ "$ONLY_AGENTS" = "0" ]; then
 say "Готовлю .env"
 if [ ! -f "$ENV_FILE" ]; then
   cp "$ROOT/.env.example" "$ENV_FILE"
@@ -161,10 +173,11 @@ ask_if_missing TELEGRAM_CHAT_ID \
 ask_if_missing VOICE_YANDEX_TOKEN \
   "OAuth-токен Яндекса со скоупом «Умный дом» — нужен только для озвучки на колонке (см. docs/ALICE.md)" \
   "$YANDEX_TOKEN"
+fi
 
 # ── 3. Колонки ────────────────────────────────────────────────────
 
-if [ "$SKIP_STATIONS" = "0" ] && [ -n "$(env_get VOICE_YANDEX_TOKEN)" ]; then
+if [ "$ONLY_AGENTS" = "0" ] && [ "$SKIP_STATIONS" = "0" ] && [ -n "$(env_get VOICE_YANDEX_TOKEN)" ]; then
   say "Ищу колонки в локальной сети"
   if command -v node >/dev/null 2>&1; then
     if found="$(node "$ROOT/scripts/find-stations.mjs" --env 2>/dev/null)"; then
@@ -183,6 +196,7 @@ fi
 
 # ── 4. Контейнер ──────────────────────────────────────────────────
 
+if [ "$ONLY_AGENTS" = "0" ]; then
 say "Поднимаю контейнер"
 if [ "$REBUILD" = "1" ]; then
   docker compose build --no-cache
@@ -199,6 +213,7 @@ for i in $(seq 1 20); do
   sleep 2
   [ "$i" = "20" ] && { warn "служба не ответила, логи: docker compose logs --tail=50"; exit 1; }
 done
+fi
 
 # ── 5. Автозапуск как служба ОС ───────────────────────────────────
 # Сам контейнер поднимается политикой restart: unless-stopped. Служба ОС нужна
@@ -256,7 +271,7 @@ PLIST
   info "launchd: ai.human4ai.compose установлен"
 }
 
-if [ "$SKIP_SERVICE" = "0" ]; then
+if [ "$ONLY_AGENTS" = "0" ] && [ "$SKIP_SERVICE" = "0" ]; then
   say "Ставлю автозапуск"
   case "$(uname -s)" in
     Linux) install_service_linux ;;
@@ -267,58 +282,140 @@ fi
 
 # ── 6. MCP в агентов ──────────────────────────────────────────────
 
-if [ "$SKIP_MCP" = "0" ]; then
-  say "Подключаю MCP к агентам"
-  MCP_TOKEN="$(env_get MCP_TOKEN)"
-  BASE_URL="$(env_get PUBLIC_URL)"
-  [ -n "$BASE_URL" ] || BASE_URL="http://127.0.0.1:$HOST_PORT"
-  MCP_URL="${BASE_URL%/}/mcp"
+# Скилы — обычные каталоги с SKILL.md: «установка» это копирование в каталог,
+# который агент читает. Кладём только тем агентам, которые на машине есть.
+copy_skills() {
+  local target="$1" name
+  mkdir -p "$target"
+  for skill in "$ROOT"/skills/*/; do
+    name="$(basename "$skill")"
+    rm -rf "$target/$name"
+    cp -R "$skill" "$target/$name"
+  done
+  info "скилы -> $target"
+}
 
+# Токен MCP держим и в переменной окружения: Codex умеет bearer только так, да и
+# ручные вызовы curl потом удобнее. Записываем в профиль, чтобы жил после
+# перезапуска терминала.
+export_token_to_profile() {
+  local token="$1" profile="$HOME/.zshrc"
+  [ -n "${BASH_VERSION:-}" ] && [ -f "$HOME/.bashrc" ] && profile="$HOME/.bashrc"
+
+  if grep -q 'HUMAN4AI_MCP_TOKEN=' "$profile" 2>/dev/null; then
+    # Токен мог смениться (пересоздали .env) — обновляем строку, а не плодим.
+    local tmp; tmp="$(mktemp)"
+    sed "s|^export HUMAN4AI_MCP_TOKEN=.*|export HUMAN4AI_MCP_TOKEN=$token|" "$profile" > "$tmp"
+    mv "$tmp" "$profile"
+  else
+    printf '\nexport HUMAN4AI_MCP_TOKEN=%s\n' "$token" >> "$profile"
+  fi
+
+  export HUMAN4AI_MCP_TOKEN="$token"
+  info "токен в $profile как HUMAN4AI_MCP_TOKEN"
+}
+
+if [ "$SKIP_MCP" = "0" ]; then
+  say "Подключаю агентов: MCP и скилы"
+  MCP_TOKEN="${MCP_TOKEN_ARG:-$(env_get MCP_TOKEN)}"
+  BASE_URL="${PUBLIC_URL:-$(env_get PUBLIC_URL)}"
+  [ -n "$BASE_URL" ] || BASE_URL="http://127.0.0.1:${HOST_PORT:-$(env_get HOST_PORT)}"
+
+  if [ -z "$MCP_TOKEN" ]; then
+    warn "нет MCP_TOKEN: передай --mcp-token=… (его печатает установка службы) или запусти рядом с .env"
+    exit 1
+  fi
+  MCP_URL="${BASE_URL%/}/mcp"
+  export_token_to_profile "$MCP_TOKEN"
+  agents=0
+
+  # Claude Code
   if command -v claude >/dev/null 2>&1; then
     claude mcp remove human4ai --scope user >/dev/null 2>&1 || true
     if claude mcp add --scope user --transport http human4ai "$MCP_URL" \
         --header "Authorization: Bearer $MCP_TOKEN" >/dev/null 2>&1; then
-      info "Claude Code: human4ai подключён"
+      info "Claude Code: MCP подключён"
     else
-      warn "Claude Code: подключить не удалось (claude mcp add)"
+      warn "Claude Code: подключить MCP не удалось (claude mcp add)"
     fi
+    copy_skills "$HOME/.claude/skills"
+    agents=$((agents + 1))
   else
     info "Claude Code не найден — пропускаю"
   fi
 
+  # Codex
   if command -v codex >/dev/null 2>&1; then
-    # Codex берёт bearer только из переменной окружения, поэтому кладём токен в
-    # профиль оболочки — иначе после перезапуска терминала MCP отвалится.
-    profile="$HOME/.zshrc"; [ -n "${BASH_VERSION:-}" ] && [ -f "$HOME/.bashrc" ] && profile="$HOME/.bashrc"
-    grep -q 'HUMAN4AI_MCP_TOKEN' "$profile" 2>/dev/null \
-      || printf '\nexport HUMAN4AI_MCP_TOKEN=%s\n' "$MCP_TOKEN" >> "$profile"
-    export HUMAN4AI_MCP_TOKEN="$MCP_TOKEN"
     codex mcp remove human4ai >/dev/null 2>&1 || true
-    if codex mcp add human4ai --url "$MCP_URL" --bearer-token-env-var HUMAN4AI_MCP_TOKEN >/dev/null 2>&1; then
-      info "Codex: human4ai подключён (токен в $profile как HUMAN4AI_MCP_TOKEN)"
+    if codex mcp add human4ai --url "$MCP_URL" \
+        --bearer-token-env-var HUMAN4AI_MCP_TOKEN >/dev/null 2>&1; then
+      info "Codex: MCP подключён"
     else
-      warn "Codex: подключить не удалось (codex mcp add)"
+      warn "Codex: подключить MCP не удалось (codex mcp add)"
     fi
+    copy_skills "$HOME/.codex/skills"
+    agents=$((agents + 1))
   else
     info "Codex не найден — пропускаю"
   fi
 
+  # OpenClaw
   if command -v openclaw >/dev/null 2>&1; then
     openclaw mcp remove human4ai >/dev/null 2>&1 || true
     if openclaw mcp add human4ai --url "$MCP_URL" --transport streamable-http \
         --header "Authorization=Bearer $MCP_TOKEN" >/dev/null 2>&1; then
-      info "OpenClaw: human4ai подключён"
+      info "OpenClaw: MCP подключён"
     else
-      warn "OpenClaw: подключить не удалось (openclaw mcp add)"
+      warn "OpenClaw: подключить MCP не удалось (openclaw mcp add)"
     fi
+    agents=$((agents + 1))
   else
     info "OpenClaw не найден — пропускаю"
   fi
+
+  # Sokrat — обёртка над Codex, поэтому настраивается тем же CLI: у него свой
+  # дом (CODEX_HOME), а формат конфига codex'овый. Пробуем два пути: свой
+  # бинарник, если он умеет `mcp add`, иначе codex с домом sokrat'а.
+  SOKRAT_HOME="${SOKRAT_HOME:-$HOME/.sokrat}"
+  SOKRAT_BIN="${SOKRAT_BIN:-sokrat}"
+  if command -v "$SOKRAT_BIN" >/dev/null 2>&1 || [ -d "$SOKRAT_HOME" ]; then
+    sokrat_done=0
+
+    if command -v "$SOKRAT_BIN" >/dev/null 2>&1; then
+      "$SOKRAT_BIN" mcp remove human4ai >/dev/null 2>&1 || true
+      if "$SOKRAT_BIN" mcp add human4ai --url "$MCP_URL" \
+          --bearer-token-env-var HUMAN4AI_MCP_TOKEN >/dev/null 2>&1; then
+        info "Sokrat: MCP подключён ($SOKRAT_BIN mcp add)"
+        sokrat_done=1
+      fi
+    fi
+
+    if [ "$sokrat_done" = "0" ] && command -v codex >/dev/null 2>&1 && [ -d "$SOKRAT_HOME" ]; then
+      CODEX_HOME="$SOKRAT_HOME" codex mcp remove human4ai >/dev/null 2>&1 || true
+      if CODEX_HOME="$SOKRAT_HOME" codex mcp add human4ai --url "$MCP_URL" \
+          --bearer-token-env-var HUMAN4AI_MCP_TOKEN >/dev/null 2>&1; then
+        info "Sokrat: MCP подключён (codex с CODEX_HOME=$SOKRAT_HOME)"
+        sokrat_done=1
+      fi
+    fi
+
+    [ "$sokrat_done" = "1" ] || warn "Sokrat: подключить MCP не удалось — см. docs/MCP.md"
+    copy_skills "${SOKRAT_SKILLS_DIR:-$SOKRAT_HOME/skills}"
+    agents=$((agents + 1))
+  else
+    info "Sokrat не найден — пропускаю"
+  fi
+
+  [ "$agents" = "0" ] && warn "ни одного агента не нашлось: MCP и скилы никуда не поставлены"
 fi
 
 # ── 7. Что осталось руками ────────────────────────────────────────
 
 say "Готово"
+if [ "$ONLY_AGENTS" = "1" ]; then
+  info "агенты подключены к $BASE_URL"
+  exit 0
+fi
 info "служба:   http://127.0.0.1:$HOST_PORT/api/health"
 info "логи:     docker compose logs -f"
 info "остановить: docker compose stop   |  обновить: git pull && ./start.sh"
