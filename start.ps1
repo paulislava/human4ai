@@ -136,20 +136,16 @@ if (-not (Get-EnvValue 'VOICE_YANDEX_TOKEN') -and -not $NonInteractive) {
   Say 'Токен Яндекса для озвучки на колонке'
   Info 'нужен OAuth-токен со скоупами «Умный дом» (iot:view, iot:control)'
 
+  # Своё приложение регистрировать не нужно: публичный client_id Яндекс Музыки —
+  # тот же, на котором работают открытые библиотеки к API Яндекса.
   $clientId = Get-EnvValue 'YANDEX_OAUTH_CLIENT_ID'
-  if (-not $clientId) {
-    Info 'если приложения ещё нет — создай: https://oauth.yandex.ru/client/new'
-    Info '  тип «Веб-сервисы», Redirect URI https://oauth.yandex.ru/verification_code,'
-    Info '  скоупы «Умный дом: просмотр и управление»'
-    $clientId = Read-Host '    ID приложения (Enter — вставлю токен вручную)'
-    if ($clientId) { Set-EnvValue 'YANDEX_OAUTH_CLIENT_ID' $clientId }
-  }
+  if (-not $clientId) { $clientId = '23cabbbdc6cd418abb4b39c32c41195d' }
 
-  if ($clientId) {
-    Info 'открываю страницу выдачи токена…'
-    Start-Process "https://oauth.yandex.ru/authorize?response_type=token&client_id=$clientId"
-    Info 'после разрешения токен будет в адресной строке после #access_token='
-  }
+  $authUrl = "https://oauth.yandex.ru/authorize?response_type=token&client_id=$clientId"
+  Info 'открываю страницу выдачи токена (приложение «Яндекс Музыка»)…'
+  Start-Process $authUrl
+  Info 'разреши доступ — токен окажется в адресной строке после #access_token='
+  Info "если браузер не открылся: $authUrl"
 
   $pasted = Read-Host '    Вставь токен (Enter — пропустить, озвучка выключится)'
   # Из адресной строки часто копируют целиком — вытащим токен сами.

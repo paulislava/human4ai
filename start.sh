@@ -216,22 +216,17 @@ if [ -z "$(env_get VOICE_YANDEX_TOKEN)" ] && [ "$INTERACTIVE" = "1" ]; then
   say "Токен Яндекса для озвучки на колонке"
   info "нужен OAuth-токен со скоупами «Умный дом» (iot:view, iot:control)"
 
+  # Своё приложение регистрировать не нужно: берём публичный client_id Яндекс
+  # Музыки — тот же, на котором работают открытые библиотеки к сервисам Яндекса.
+  # Переопределяется в .env (YANDEX_OAUTH_CLIENT_ID), если понадобится своё.
   client_id="$(env_get YANDEX_OAUTH_CLIENT_ID)"
-  if [ -z "$client_id" ]; then
-    info "если приложения ещё нет — создай: https://oauth.yandex.ru/client/new"
-    info "  тип «Веб-сервисы», Redirect URI https://oauth.yandex.ru/verification_code,"
-    info "  скоупы «Умный дом: просмотр и управление»"
-    printf '    ID приложения (Enter — вставлю токен вручную): '
-    read -r client_id < /dev/tty || client_id=""
-    [ -n "$client_id" ] && env_set YANDEX_OAUTH_CLIENT_ID "$client_id"
-  fi
+  [ -n "$client_id" ] || client_id="$YANDEX_MUSIC_CLIENT_ID"
 
-  if [ -n "$client_id" ]; then
-    auth_url="https://oauth.yandex.ru/authorize?response_type=token&client_id=$client_id"
-    info "открываю страницу выдачи токена…"
-    open_url "$auth_url"
-    info "после разрешения токен будет в адресной строке после #access_token="
-  fi
+  auth_url="https://oauth.yandex.ru/authorize?response_type=token&client_id=$client_id"
+  info "открываю страницу выдачи токена (приложение «Яндекс Музыка»)…"
+  open_url "$auth_url"
+  info "разреши доступ — токен окажется в адресной строке после #access_token="
+  info "если браузер не открылся: $auth_url"
 
   printf '    Вставь токен (Enter — пропустить, озвучка выключится): '
   read -r pasted < /dev/tty || pasted=""
@@ -400,6 +395,10 @@ export_token_to_profile() {
 }
 
 # Все агенты, которых умеем настраивать. Порядок = порядок в меню.
+# Публичный client_id приложения «Яндекс Музыка»: используется открытыми
+# библиотеками к API Яндекса, поэтому своё приложение регистрировать не нужно.
+YANDEX_MUSIC_CLIENT_ID="23cabbbdc6cd418abb4b39c32c41195d"
+
 AGENT_IDS="claude codex sokrat openclaw"
 SOKRAT_HOME="${SOKRAT_HOME:-$HOME/.sokrat}"
 SOKRAT_BIN="${SOKRAT_BIN:-sokrat}"
