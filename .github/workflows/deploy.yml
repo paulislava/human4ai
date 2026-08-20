@@ -67,6 +67,7 @@ jobs:
           VOICE_STATION: ${{ vars.VOICE_STATION }}
           VOICE_STATION_NAMES: ${{ vars.VOICE_STATION_NAMES }}
           MCP_TOKEN: ${{ secrets.MCP_TOKEN }}
+          PUBLIC_URL: ${{ vars.PUBLIC_URL }}
         run: |
           set -e
 
@@ -105,6 +106,7 @@ jobs:
             -e VOICE_STATION="$VOICE_STATION" \
             -e VOICE_STATION_NAMES="$VOICE_STATION_NAMES" \
             -e MCP_TOKEN="$MCP_TOKEN" \
+            -e PUBLIC_URL="$PUBLIC_URL" \
             "$IMAGE")
 
           SUCCESS=0
