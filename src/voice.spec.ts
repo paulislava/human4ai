@@ -244,6 +244,24 @@ describe('вебхук навыка Алисы', () => {
     expect(setup.store.get(second.id)!.status).toBe('pending');
   });
 
+  it.each([
+    ['алиса ответь коду да, мержь', 'да, мержь'],
+    ['запусти навык ответь коду да', 'да'],
+    ['алиса скажи коду нет', 'нет'],
+    ['спроси у кода: давай', 'давай'],
+    ['коду — обновляй', 'обновляй'],
+    ['клоду да', 'да'],
+  ])('срезает обёртку в «%s»', async (utter, expected) => {
+    const setup = makeSetup();
+    const app = makeApp(setup);
+    const ask = setup.service.create({ client: 'alpha', channel: 'voice', question: 'мержить?' });
+    void setup.service.run(ask.id);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    await callJson(app, 'POST', `/alice/${SECRET}`, utterance(utter));
+    expect(setup.store.get(ask.id)!.answer).toBe(expected);
+  });
+
   it('«повтори» читает вопрос, не списывая его', async () => {
     const setup = makeSetup();
     const app = makeApp(setup);
