@@ -178,7 +178,7 @@ claude mcp add --scope user --transport http human4ai \
 ```
 
 Инструменты: `ask_user` (channel `voice`/`telegram`), `wait_answer`, `cancel_ask`,
-`queue_status`. Свой JSON-RPC, а не SDK: нужен один POST-эндпоинт в том же
+`alice_say` (произнести уведомление на колонке, ответа не ждём), `queue_status`. Свой JSON-RPC, а не SDK: нужен один POST-эндпоинт в том же
 Express-приложении, SSE-поток не нужен — сервер сам ничего не инициирует.
 
 ### Голосовые эндпоинты (диагностика)

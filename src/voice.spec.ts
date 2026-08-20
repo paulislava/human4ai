@@ -328,8 +328,64 @@ describe('MCP', () => {
       'ask_user',
       'wait_answer',
       'cancel_ask',
+      'alice_say',
       'queue_status',
     ]);
+  });
+
+  it('alice_say произносит текст на колонке', async () => {
+    const setup = makeSetup();
+    const said: Array<{ text: string; station: string | null }> = [];
+    (setup.voice as unknown as { speak: unknown }).speak = async (
+      text: string,
+      station: string | null,
+    ) => {
+      said.push({ text, station });
+      return { ok: true, detail: 'кабинет' };
+    };
+
+    const res = await callJson(
+      makeApp(setup),
+      'POST',
+      '/mcp',
+      rpc('tools/call', { name: 'alice_say', arguments: { text: 'сборка готова', station: 'кабинет' } }),
+      auth,
+    );
+
+    expect(res.body.result.structuredContent).toEqual({ ok: true, station: 'кабинет' });
+    expect(said).toEqual([{ text: 'сборка готова', station: 'кабинет' }]);
+    // Уведомление не должно попадать в очередь вопросов.
+    expect(setup.store.voicePending()).toHaveLength(0);
+  });
+
+  it('alice_say сообщает об ошибке, если колонка не отозвалась', async () => {
+    const setup = makeSetup();
+    (setup.voice as unknown as { speak: unknown }).speak = async () => ({
+      ok: false,
+      detail: 'колонок не видно',
+    });
+
+    const res = await callJson(
+      makeApp(setup),
+      'POST',
+      '/mcp',
+      rpc('tools/call', { name: 'alice_say', arguments: { text: 'привет' } }),
+      auth,
+    );
+
+    expect(res.body.result.isError).toBe(true);
+    expect(res.body.result.content[0].text).toContain('колонок не видно');
+  });
+
+  it('alice_say без текста — ошибка', async () => {
+    const res = await callJson(
+      makeApp(makeSetup()),
+      'POST',
+      '/mcp',
+      rpc('tools/call', { name: 'alice_say', arguments: { text: '  ' } }),
+      auth,
+    );
+    expect(res.body.result.isError).toBe(true);
   });
 
   it('уведомление получает 202 без тела', async () => {

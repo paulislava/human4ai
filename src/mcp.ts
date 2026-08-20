@@ -104,6 +104,29 @@ const TOOLS = [
     inputSchema: { type: 'object', properties: { id: { type: 'string' } }, required: ['id'] },
   },
   {
+    name: 'alice_say',
+    title: 'Сказать вслух на колонке',
+    description:
+      'Произнести текст на Яндекс-Станции — это уведомление, а не вопрос: ответа ' +
+      'не ждём и в очередь ничего не кладём. Годится, чтобы сообщить о готовности ' +
+      'долгой работы, о падении сборки или просто позвать. Нужен ответ — это ' +
+      'ask_user. Текст произносится вслух: короткая разговорная фраза без markdown, ' +
+      'путей и кода.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        text: { type: 'string', description: 'Что сказать, одной фразой.' },
+        station: {
+          type: 'string',
+          description:
+            'Колонка: номер, имя (например «кабинет») или device_id. ' +
+            'По умолчанию — закреплённая колонка службы.',
+        },
+      },
+      required: ['text'],
+    },
+  },
+  {
     name: 'queue_status',
     title: 'Очередь вопросов',
     description: 'Голосовая очередь: порядок, кто спрашивает, сколько ждёт. Плюс список колонок.',
@@ -210,6 +233,19 @@ export function createMcpRouter(
         const id = String(args.id ?? '');
         const cancelled = asks.service.cancel(id);
         return { status: cancelled ? 'cancelled' : 'not_pending', id };
+      }
+
+      case 'alice_say': {
+        const text = String(args.text ?? '').trim();
+        if (!text) throw new Error('text обязателен');
+
+        const station = typeof args.station === 'string' ? args.station : null;
+        const { ok, detail } = await voice.speak(text, station);
+        // Не смогли произнести — это ошибка инструмента: молча «успешно» отвечать
+        // нельзя, иначе сессия решит, что человека предупредили.
+        if (!ok) throw new Error(`колонка не произнесла: ${detail}`);
+
+        return { ok: true, station: detail };
       }
 
       case 'queue_status': {
