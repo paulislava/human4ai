@@ -1,6 +1,14 @@
 import { config } from '../config';
 import { say } from './glagol';
 import { resolveStation, Station, stations } from './stations';
+import { BridgeCallError } from '../bridge/server';
+import { BridgeStation } from '../bridge/protocol';
+
+interface VoiceBridge {
+  hasCapability(capability: string): boolean;
+  stations(): BridgeStation[];
+  call(method: string, params: unknown): Promise<unknown>;
+}
 
 /**
  * Голосовой канал вопросов: колонка произносит вопрос, Павел отвечает через
@@ -10,11 +18,15 @@ import { resolveStation, Station, stations } from './stations';
  * этот — нет: сессия спрашивает, колонка проговаривает, ответ уходит голосом.
  */
 export class VoiceService {
+  constructor(private readonly bridge?: VoiceBridge) {}
+
   isAvailable(): boolean {
-    return Boolean(config.voice.yandexToken && config.voice.aliceSecret);
+    return Boolean(config.voice.aliceSecret && (config.voice.yandexToken || this.bridge?.hasCapability('voice')));
   }
 
-  stations(): Promise<Station[]> {
+  async stations(): Promise<Station[]> {
+    const remote = this.bridge?.stations() ?? [];
+    if (remote.length) return remote.map(({ clientId: _clientId, ...station }) => station);
     return stations();
   }
 
@@ -41,11 +53,30 @@ export class VoiceService {
    * очереди, его всегда можно перечитать голосом («что там»).
    */
   async speak(text: string, target?: string | null): Promise<{ ok: boolean; detail: string }> {
+    const cleaned = clean(text);
+    if (this.bridge?.hasCapability('voice')) {
+      try {
+        const result = await this.bridge.call('voice.say', {
+          text: cleaned,
+          station: target ?? null,
+        }) as { station: string; clientId?: string };
+        return { ok: true, detail: `${result.station}${result.clientId ? ` via ${result.clientId}` : ''}` };
+      } catch (error) {
+        const bridgeError = error as BridgeCallError;
+        // После ack повторять через legacy нельзя: колонка могла уже произнести.
+        if (bridgeError.acknowledged) {
+          console.error('[voice] результат bridge-команды неизвестен:', bridgeError.message);
+          return { ok: false, detail: bridgeError.message };
+        }
+        console.error('[voice] bridge недоступен, пробую legacy:', bridgeError.message);
+      }
+    }
+
     if (!config.voice.yandexToken) return { ok: false, detail: 'VOICE_YANDEX_TOKEN не задан' };
 
     try {
       const station = await resolveStation(target);
-      await say(station, clean(text));
+      await say(station, cleaned);
       return { ok: true, detail: station.label };
     } catch (error) {
       const detail = (error as Error).message;

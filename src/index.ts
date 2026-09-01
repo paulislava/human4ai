@@ -17,7 +17,7 @@ function main(): void {
   const askStore = new AskStore(store.db);
   // Голосовой канал: тот же вопрос, но озвучивается на колонке, а ответ приходит
   // из навыка Алисы.
-  const voice = new VoiceService();
+  const voice = new VoiceService(bridge);
   const askService = new AskService(askStore, telegram, config.defaultTimeoutMs, voice);
 
   telegram.startPolling(
