@@ -1,4 +1,4 @@
-# Устанавливает исходящий human4ai voice client как NSSM-службу на Windows-ПК.
+﻿# Устанавливает исходящий human4ai voice client как NSSM-службу на Windows-ПК.
 [CmdletBinding()]
 param(
   [string]$ServerUrl = 'https://human4ai.paulislava.space',
@@ -47,17 +47,48 @@ $assistantConfig = "$env:USERPROFILE\.openclaw\workspace\scripts\assistant\confi
 $yandexToken = ''
 $stationNames = ''
 if (Test-Path $assistantConfig) {
-  foreach ($line in Get-Content $assistantConfig) {
+  foreach ($line in Get-Content -Encoding UTF8 $assistantConfig) {
     if ($line -match '^YANDEX_TOKEN=(.*)$') { $yandexToken = $Matches[1].Trim() }
     if ($line -match '^STATION_NAMES=(.*)$') { $stationNames = $Matches[1].Trim() }
   }
 }
 if (-not $yandexToken) { throw "YANDEX_TOKEN не найден в $assistantConfig" }
 
+$savedErrorPreference = $ErrorActionPreference
+$ErrorActionPreference = 'Continue'
 $found = & $Node (Join-Path $Runtime 'scripts\find-stations.mjs') --env 2>$null
-if ($LASTEXITCODE -ne 0) { throw 'локальные Яндекс-Станции не найдены' }
-$stations = ($found | Where-Object { $_ -like 'VOICE_STATIONS=*' } | Select-Object -First 1) -replace '^VOICE_STATIONS=', ''
-$station = ($found | Where-Object { $_ -like 'VOICE_STATION=*' } | Select-Object -First 1) -replace '^VOICE_STATION=', ''
+$nodeDiscoveryExit = $LASTEXITCODE
+$ErrorActionPreference = $savedErrorPreference
+
+if ($nodeDiscoveryExit -eq 0) {
+  $stations = ($found | Where-Object { $_ -like 'VOICE_STATIONS=*' } | Select-Object -First 1) -replace '^VOICE_STATIONS=', ''
+  $station = ($found | Where-Object { $_ -like 'VOICE_STATION=*' } | Select-Object -First 1) -replace '^VOICE_STATION=', ''
+} else {
+  # На Windows порт 5353 нередко уже занят Bonjour, и Node получает не все
+  # multicast-пакеты. Настроенный assistant использует zeroconf и надёжно
+  # видит те же станции — разбираем его ASCII-поля как запасной путь.
+  $assistantPython = Join-Path (Split-Path $assistantConfig) '.venv\Scripts\python.exe'
+  $assistantQuasar = Join-Path (Split-Path $assistantConfig) 'quasar.py'
+  if (-not (Test-Path $assistantPython) -or -not (Test-Path $assistantQuasar)) {
+    throw 'локальные Яндекс-Станции не найдены'
+  }
+
+  $ErrorActionPreference = 'Continue'
+  $deviceLines = & $assistantPython $assistantQuasar --devices 2>$null
+  $pythonDiscoveryExit = $LASTEXITCODE
+  $ErrorActionPreference = $savedErrorPreference
+  $stationEntries = @()
+  foreach ($line in $deviceLines) {
+    if ($line -match 'device_id=(\S+)\s+platform=(\S+)\s+@\s+([0-9.]+):(\d+)') {
+      $stationEntries += "$($Matches[1]):$($Matches[3]):$($Matches[4]):$($Matches[2]):$($Matches[2])"
+    }
+  }
+  if ($pythonDiscoveryExit -ne 0 -or $stationEntries.Count -eq 0) {
+    throw 'локальные Яндекс-Станции не найдены'
+  }
+  $stations = $stationEntries -join ', '
+  $station = ($stationEntries[0] -split ':')[0]
+}
 
 $envLines = @(
   "HUMAN4AI_URL=$ServerUrl",
