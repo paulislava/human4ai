@@ -180,6 +180,13 @@ function result(ask: Ask | null, id?: string) {
         id: ask.id,
         hint: 'ответа не было, вопрос снят — спроси в терминале',
       };
+    case 'failed':
+      return {
+        status: 'failed',
+        id: ask.id,
+        error: ask.answer || 'вопрос не удалось доставить',
+        hint: 'канал недоступен — покажи вопрос в текущем чате',
+      };
     default:
       return {
         status: 'pending',

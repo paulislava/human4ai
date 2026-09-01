@@ -9,7 +9,7 @@ import { VoiceService } from './voice/voice.service';
  * отдаются один раз. `text` — обычный вопрос, ответ читается сколько нужно.
  */
 export type AskKind = 'secret' | 'code' | 'text';
-export type AskStatus = 'pending' | 'answered' | 'timeout' | 'taken' | 'skipped';
+export type AskStatus = 'pending' | 'answered' | 'timeout' | 'taken' | 'skipped' | 'failed';
 /**
  * Куда уходит вопрос: реплаем в Telegram или голосом на Яндекс-Станцию.
  * Голосовой канал строго FIFO — вслух звучит только первый вопрос очереди,
@@ -428,7 +428,13 @@ export class AskService {
 
     if (ask.channel === 'voice') return this.runVoice(ask, remaining);
 
-    await this.sendToTelegram(ask);
+    try {
+      await this.sendToTelegram(ask);
+    } catch (error) {
+      const message = (error as Error).message || 'Telegram delivery failed';
+      this.store.update(askId, { status: 'failed', answer: message });
+      throw error;
+    }
 
     const answer = await new Promise<string | null>((resolve) => {
       const timer = setTimeout(() => {
@@ -681,25 +687,21 @@ export class AskService {
     const ask = this.store.byPollId(pollId);
     if (!ask) return false;
 
-    const pending = this.waiting.get(ask.id);
-    if (!pending) return false;
-
     // Выбор отозвали — ждём дальше, вопрос ещё открыт.
     if (optionIds.length === 0) return true;
 
     const answer = ask.options[optionIds[0]];
     if (answer === undefined) return true;
 
-    clearTimeout(pending.timer);
-    this.waiting.delete(ask.id);
-
     if (ask.telegramMessageId) {
       this.store.update(ask.id, { telegramReplyMessageId: ask.telegramMessageId });
       void this.telegram.setReaction(ask.telegramMessageId, REACTIONS.taken);
     }
 
-    console.log(`[ask] ${ask.id}: выбран вариант в опросе`);
-    pending.resolve(answer);
+    // Сохраняем ответ синхронно через общий путь deliver. Это важно, если
+    // poll_answer прилетел между отправкой опроса и регистрацией waiting:
+    // раньше такой быстрый выбор терялся и MCP продолжал видеть pending.
+    this.deliver(ask, answer, 'в опросе');
     return true;
   }
 

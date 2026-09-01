@@ -186,6 +186,21 @@ describe('AskService: любой вопрос, не только секрет', 
 });
 
 describe('AskService: вопрос опросом', () => {
+  it('сохраняет выбор, даже если poll_answer пришёл раньше регистрации ожидания', () => {
+    const store = new AskStore(new Database(':memory:'));
+    const telegram = { isConfigured: () => true, setReaction: async () => undefined } as unknown as TelegramClient;
+    const service = new AskService(store, telegram, 5_000);
+    const ask = service.create({
+      client: 'test',
+      question: 'Куда?',
+      options: ['сервер', 'локально'],
+    });
+    store.update(ask.id, { telegramPollId: 'fast-poll', telegramMessageId: 900 });
+
+    expect(service.handlePollAnswer('fast-poll', [1])).toBe(true);
+    expect(store.get(ask.id)).toMatchObject({ status: 'answered', answer: 'локально' });
+  });
+
   it('варианты уходят опросом, а выбор возвращается ответом', async () => {
     const polls: Array<{ question: string; options: string[] }> = [];
     const reactions: Array<{ messageId: number; emoji: string | null }> = [];
@@ -288,6 +303,22 @@ describe('AskService: вопрос опросом', () => {
 
     expect(pollsSent).toBe(0);
     expect(store.get(ask.id)!.answer).toBe('секрет');
+  });
+});
+
+describe('AskService: ошибка доставки', () => {
+  it('переводит Telegram-вопрос в failed, а не оставляет pending', async () => {
+    const store = new AskStore(new Database(':memory:'));
+    const telegram = {
+      isConfigured: () => true,
+      createTopic: async () => null,
+      sendQuestion: async () => { throw new Error('telegram unavailable'); },
+    } as unknown as TelegramClient;
+    const service = new AskService(store, telegram, 5_000);
+    const ask = service.create({ client: 'test', question: 'Получишь?' });
+
+    await expect(service.run(ask.id)).rejects.toThrow('telegram unavailable');
+    expect(store.get(ask.id)).toMatchObject({ status: 'failed', answer: 'telegram unavailable' });
   });
 });
 
@@ -501,4 +532,3 @@ describe('одноразовая ссылка на секрет', () => {
     expect(setup.service.takeSecretLink(ask.id, 60_000)).toBeNull();
   });
 });
-
