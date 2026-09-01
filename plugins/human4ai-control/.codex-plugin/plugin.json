@@ -1,0 +1,20 @@
+{
+  "name": "human4ai-control",
+  "version": "0.1.0",
+  "description": "Voice and Telegram control through human4ai with visible text duplication.",
+  "author": {
+    "name": "Pavel Kondratov"
+  },
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "human4ai Control",
+    "shortDescription": "Voice and Telegram questions with text copies.",
+    "longDescription": "Connects Codex to human4ai and defines explicit voice or Telegram control modes, station selection, typed-message cancellation, and mandatory question duplication in chat.",
+    "developerName": "Pavel Kondratov",
+    "category": "Productivity",
+    "capabilities": ["MCP", "Voice", "Telegram"],
+    "defaultPrompt": "Use human4ai voice or Telegram control while keeping every question visible in the text chat."
+  },
+  "mcpServers": "./.mcp.json"
+}
+

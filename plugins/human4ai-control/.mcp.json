@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "human4ai": {
+      "type": "http",
+      "url": "https://human4ai.paulislava.space/mcp",
+      "headers": {
+        "Authorization": "Bearer ${HUMAN4AI_MCP_TOKEN}"
+      }
+    }
+  }
+}
+
