@@ -5,10 +5,12 @@ import { CaptchaOrchestrator } from './orchestrator';
 import { createServer } from './server';
 import { TelegramClient } from './telegram';
 import { VoiceService } from './voice/voice.service';
+import { BridgeServer } from './bridge/server';
 
 function main(): void {
   const store = new TaskStore();
   const telegram = new TelegramClient();
+  const bridge = new BridgeServer(config.bridge.tokens);
   const orchestrator = new CaptchaOrchestrator(store, telegram);
 
   // Запросы секретов живут на той же базе и том же боте, что капча.
@@ -46,6 +48,7 @@ function main(): void {
     );
     console.log(`MCP: ${config.mcp.token ? '/mcp включён' : 'нет MCP_TOKEN'}`);
   });
+  bridge.attach(server);
 
   // После рестарта в очереди могли остаться неотвеченные голосовые вопросы:
   // напоминаем о первом, иначе он молча висел бы до истечения срока.
@@ -53,6 +56,7 @@ function main(): void {
 
   const shutdown = (): void => {
     telegram.stopPolling();
+    bridge.close();
     server.close(() => {
       store.close();
       process.exit(0);

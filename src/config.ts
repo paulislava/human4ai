@@ -110,6 +110,11 @@ export const config = {
     secretLinkTtlMs: Number(process.env.SECRET_LINK_TTL_MS ?? 30 * 60 * 1000),
   },
 
+  /** Исходящие локальные клиенты: «token:client-id,token:client-id». */
+  bridge: {
+    tokens: parseClientTokens(process.env.VOICE_CLIENT_TOKENS ?? ''),
+  },
+
   /**
    * Публичный адрес службы — из него собираются ссылки на секреты. Пусто ->
    * ссылка будет относительной, и сессия подставит адрес сама.
