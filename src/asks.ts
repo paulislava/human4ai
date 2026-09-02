@@ -869,11 +869,6 @@ export class AskService {
       lines.push('', `Ссылка: ${ask.link}`);
     }
 
-    if (ask.channel === 'voice') {
-      lines.push('', 'Этот вопрос сейчас звучит на колонке — можно ответить голосом:');
-      lines.push('«Алиса, ответь коду …». Кто первый, тот и закрывает вопрос.');
-    }
-
     const minutes = Math.round((ask.expiresAt - Date.now()) / 60_000);
     lines.push(
       '',

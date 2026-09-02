@@ -11,8 +11,8 @@ interface VoiceBridge {
 }
 
 /**
- * Голосовой канал вопросов: колонка произносит вопрос, Павел отвечает через
- * навык Алисы «Ответь коду».
+ * Голосовой канал вопросов: колонка произносит вопрос от human for ai, Павел
+ * отвечает голосом.
  *
  * Отдельный канал нужен потому, что Telegram-вопрос требует телефона в руках, а
  * этот — нет: сессия спрашивает, колонка проговаривает, ответ уходит голосом.
@@ -30,7 +30,7 @@ export class VoiceService {
     return stations();
   }
 
-  /** Фраза для колонки: кто спрашивает, что спрашивает, как ответить. */
+  /** Фраза для колонки: короткое представление источника и сам вопрос. */
   phrase(input: {
     question: string;
     client?: string | null;
@@ -38,12 +38,9 @@ export class VoiceService {
     options?: string[];
     queueLength?: number;
   }): string {
-    const who = input.context?.trim() || input.client?.trim() || 'Клод';
-    const parts = [`${who} спрашивает: ${clean(input.question)}`];
+    const parts = ['Вопрос из human for ai.', clean(input.question)];
 
     if (input.options?.length) parts.push(`Варианты: ${input.options.join(', ')}.`);
-    if ((input.queueLength ?? 1) > 1) parts.push(`В очереди ещё ${input.queueLength! - 1}.`);
-    parts.push('Скажите: Алиса, запусти навык Мой код. После запуска произнесите ваш ответ.');
 
     return parts.join(' ');
   }

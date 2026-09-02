@@ -114,12 +114,10 @@ function utterance(text: string, extra: Record<string, unknown> = {}) {
 }
 
 describe('голосовой канал', () => {
-  it('подсказывает гарантированный запуск приватного навыка по имени «Мой код»', () => {
+  it('представляет вопрос как вопрос из human for ai без подсказок', () => {
     const phrase = new VoiceService().phrase({ question: 'Продолжать?' });
 
-    expect(phrase).toContain(
-      'Скажите: Алиса, запусти навык Мой код. После запуска произнесите ваш ответ.',
-    );
+    expect(phrase).toBe('Вопрос из human for ai. Продолжать?');
   });
 
   it('озвучивает только первый вопрос очереди', async () => {
@@ -186,9 +184,10 @@ describe('голосовой канал', () => {
     const running = setup.service.run(ask.id);
     await new Promise((resolve) => setTimeout(resolve, 20));
 
-    // Ушло и на колонку, и в Telegram — с подсказкой про голосовой ответ.
+    // Ушло и на колонку, и в Telegram — без инструкций по запуску навыка.
     expect(setup.said).toEqual(['вопрос: мержить?']);
-    expect(setup.sent[0]).toContain('звучит на колонке');
+    expect(setup.sent[0]).not.toContain('Алиса');
+    expect(setup.sent[0]).not.toContain('ответить голосом');
     const messageId = setup.store.get(ask.id)!.telegramMessageId!;
 
     // Ответ реплаем в Telegram закрывает вопрос и убирает его из очереди.
@@ -230,6 +229,17 @@ describe('голосовой канал', () => {
 });
 
 describe('вебхук навыка Алисы', () => {
+  it('не подсказывает фразу активации, когда очередь пуста', async () => {
+    const res = await callJson(
+      makeApp(makeSetup()),
+      'POST',
+      `/alice/${SECRET}`,
+      utterance('', { new: true }),
+    );
+
+    expect(res.body.response.text).not.toMatch(/ответь коду|запусти навык/i);
+  });
+
   it('без секрета отдаёт 403', async () => {
     const app = makeApp(makeSetup());
     const res = await callJson(app, 'POST', '/alice/wrong', utterance('да'));
@@ -339,6 +349,8 @@ describe('MCP', () => {
       'alice_say',
       'queue_status',
     ]);
+    const askUser = res.body.result.tools.find((tool: { name: string }) => tool.name === 'ask_user');
+    expect(askUser.description).not.toMatch(/ответь коду|запусти навык/i);
   });
 
   it('alice_say произносит текст на колонке', async () => {
