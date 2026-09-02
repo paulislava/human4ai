@@ -43,7 +43,7 @@ export class VoiceService {
 
     if (input.options?.length) parts.push(`Варианты: ${input.options.join(', ')}.`);
     if ((input.queueLength ?? 1) > 1) parts.push(`В очереди ещё ${input.queueLength! - 1}.`);
-    parts.push('Скажите: Алиса, ответь коду, и дальше ваш ответ.');
+    parts.push('Скажите: Алиса, запусти навык Мой код. После запуска произнесите ваш ответ.');
 
     return parts.join(' ');
   }

@@ -114,6 +114,14 @@ function utterance(text: string, extra: Record<string, unknown> = {}) {
 }
 
 describe('голосовой канал', () => {
+  it('подсказывает гарантированный запуск приватного навыка по имени «Мой код»', () => {
+    const phrase = new VoiceService().phrase({ question: 'Продолжать?' });
+
+    expect(phrase).toContain(
+      'Скажите: Алиса, запусти навык Мой код. После запуска произнесите ваш ответ.',
+    );
+  });
+
   it('озвучивает только первый вопрос очереди', async () => {
     const setup = makeSetup();
     const first = setup.service.create({ client: 'alpha', channel: 'voice', question: 'первый?' });
