@@ -4,7 +4,8 @@
 
 Сервер вопросов человеку через Telegram и Яндекс-Станции. Прод работает на
 `human4ai.paulislava.space`; локальные колонки доступны серверу через исходящий
-WebSocket-клиент на Windows-ПК.
+WebSocket-клиент на Raspberry Pi `PaulIslavaTV`. Windows-службы сохранены
+отключёнными как rollback.
 
 ## Проверка
 
@@ -32,5 +33,5 @@ npm run build
 
 Не печатать MCP-, bridge-, Telegram- и Yandex-токены. Прод выкатывается push в
 `main` через GitHub Actions; после push дождаться Tests и Build & Deploy.
-Windows-клиент ставится `client/install-windows.ps1` как NSSM-служба.
-
+Основной клиент на Pi — user systemd-служба `human4ai-client.service`; Windows-откат
+устанавливается `client/install-windows.ps1` как NSSM-служба.

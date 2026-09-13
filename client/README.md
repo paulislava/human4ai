@@ -1,8 +1,13 @@
 # human4ai voice client
 
-Исходящий Windows-клиент связывает сервер human4ai с Яндекс-Станциями в
+Исходящий домашний клиент связывает сервер human4ai с Яндекс-Станциями в
 домашней сети. Он не открывает входящих портов: одно WSS-соединение идёт к
 `https://human4ai.paulislava.space/api/bridge`.
+
+Основной runtime работает на Raspberry Pi `PaulIslavaTV`; Windows-вариант
+сохранён для отката.
+
+## Windows
 
 ```powershell
 npm ci
@@ -27,11 +32,25 @@ Runtime находится в `~/.local/share/human4ai-client` и содержи
 - `client/runtime-package.json`, скопированный как `package.json`;
 - защищённый `.env` с bridge/Yandex-токенами и станциями.
 
-После копирования файлов:
+На Pi нужен только Node.js: runtime-зависимости готовятся на машине с npm и
+копируются вместе со сборкой. Это не тянет на ARM-устройство серверную
+нативную зависимость `better-sqlite3`.
+
+Подготовка зависимостей на машине с npm:
+
+```bash
+runtime_tmp="$(mktemp -d)"
+cp client/runtime-package.json "$runtime_tmp/package.json"
+npm install --prefix "$runtime_tmp" --omit=dev --ignore-scripts
+rsync -av "$runtime_tmp/node_modules/" \
+  paulislava@PaulIslavaTV:.local/share/human4ai-client/node_modules/
+```
+
+После копирования `dist/`, `node_modules/`, mDNS-скрипта, `package.json` и
+защищённого `.env`:
 
 ```bash
 cd ~/.local/share/human4ai-client
-npm install --omit=dev --ignore-scripts
 node scripts/find-stations.mjs --env
 chmod 600 .env
 

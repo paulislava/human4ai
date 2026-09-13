@@ -8,7 +8,7 @@ frps и добавлял лишний сетевой слой.
 
 ## Решение
 
-Windows-ПК держит одно исходящее WSS-соединение с
+Raspberry Pi `PaulIslavaTV` держит одно исходящее WSS-соединение с
 `https://human4ai.paulislava.space/api/bridge`. При подключении он передаёт
 capabilities и список станций с алиасами. Сервер отправляет `voice.say`,
 получает отдельные ACK и response и не повторяет уже подтверждённую команду.
@@ -17,9 +17,9 @@ Nginx проксирует `/api/bridge` прямо на `127.0.0.1:4020`, с Up
 отключённой буферизацией и суточными таймаутами. Это соответствует прямой схеме
 reverse proxy приложения TV и обходит Apache/Hestia.
 
-Клиент ставится NSSM-службой `human4ai-client`, запускается автоматически и
-переподключается с exponential backoff. Станции и токен Яндекса берутся из
-локального assistant; mDNS имеет Node- и zeroconf-пути.
+Клиент ставится user systemd-службой `human4ai-client`, запускается автоматически и
+переподключается с exponential backoff. Станции обнаружены по mDNS в домашней LAN. Windows-клиент
+сохранён отключённым для rollback.
 
 ## Протокол
 
@@ -34,6 +34,6 @@ reverse proxy приложения TV и обходит Apache/Hestia.
 - `src/bridge/protocol.ts`, `src/bridge/server.ts`
 - `src/voice/client.ts`, `src/voice/voice.service.ts`
 - `client/install-windows.ps1`
+- `client/human4ai-client.service`, `client/runtime-package.json`
 - `deploy/nginx.websocket.conf`
 - `plugins/human4ai-control/`, `skills/human4ai-control/`
-
