@@ -55,7 +55,7 @@ export class VoiceService {
       try {
         const result = await this.bridge.call('voice.say', {
           text: cleaned,
-          station: target ?? null,
+          station: target?.trim() || config.voice.station.trim() || null,
         }) as { station: string; clientId?: string };
         return { ok: true, detail: `${result.station}${result.clientId ? ` via ${result.clientId}` : ''}` };
       } catch (error) {
