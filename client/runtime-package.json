@@ -1,0 +1,11 @@
+{
+  "name": "human4ai-voice-client-runtime",
+  "version": "1.0.0",
+  "private": true,
+  "type": "commonjs",
+  "dependencies": {
+    "axios": "^1.12.2",
+    "dotenv": "^17.2.3",
+    "ws": "^8.21.3"
+  }
+}

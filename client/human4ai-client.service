@@ -1,0 +1,15 @@
+[Unit]
+Description=human4ai voice client
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/.local/share/human4ai-client
+ExecStart=/usr/bin/node dist/voice/client.js
+Environment=NODE_ENV=production
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target
