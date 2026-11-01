@@ -7,3 +7,6 @@
   Windows-службы.
 - `human4ai-control` — отдельные skill и Codex-плагин для явного голосового или
   Telegram-управления, обязательной текстовой копии вопроса и маркеров `gup`/`vc`.
+
+- [Production на Windows-ПК](features/windows-production-service.md) — отдельная
+  SCM-служба и WSL2 на D:, сохранённые SQLite, токены и публичные адреса.
