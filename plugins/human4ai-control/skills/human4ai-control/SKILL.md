@@ -43,3 +43,12 @@ If the result is `pending`, call `wait_answer` until `answered`, in batches of a
 
 Use `alice_say` only for one-way announcements, not as a replacement for `ask_user`.
 
+## Ожидание CI в фоне
+
+Для GitLab и GitHub используй общий навык `human4ai-ci` и команды
+`human4ai-ci-track` / `human4ai-ci-status`. Хост берётся из URL, доступ проверяется
+настроенным `glab` или `gh` для этого хоста. Не опрашивай джобы вручную.
+Команду статуса вызывай с максимальным ожиданием текущего тула; без лимита,
+если он поддерживается. При `in_progress` повторяй такое же долгое ожидание
+до терминального результата. Отмена, блокировка, ошибка или прерывание
+завершают отслеживание. Ожидание CI само по себе не включает голосовой режим.

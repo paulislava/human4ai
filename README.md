@@ -386,3 +386,12 @@ GigaChat и Claude сравниваются по точности, а разны
 - на сервере — `gigachat` и `human` прочитали верно через
   `https://human4ai.paulislava.space/api`;
 - реакции: 👀 на взятый ответ, 👍 на подошедший, 👎 после `reject`.
+
+## Фоновое ожидание CI
+
+В проекте и автономном плагине human4ai-control есть общие команды
+`human4ai-ci-track` и `human4ai-ci-status` для GitLab/GitHub, включая
+собственные инстансы и GitHub Enterprise. Tracker запускается в фоне,
+команда статуса длительно ждёт локальный результат и возвращает его раньше
+таймаута при завершении. При `in_progress` длительное ожидание повторяется.
+Подробнее: [команды CI](ai/features/background-ci-tracker.md).

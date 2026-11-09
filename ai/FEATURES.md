@@ -10,3 +10,8 @@
 
 - [Production на Windows-ПК](features/windows-production-service.md) — отдельная
   SCM-служба и WSL2 на D:, сохранённые SQLite, токены и публичные адреса.
+
+## Фоновое ожидание CI в плагине human4ai
+
+Общие автономные команды отслеживания GitLab/GitHub и длительного ожидания
+сохранённого результата: [описание](features/background-ci-tracker.md).

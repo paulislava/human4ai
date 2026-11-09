@@ -6,3 +6,11 @@ Set `HUMAN4AI_MCP_TOKEN` in the Codex environment, install the plugin, then use
 «голосовое управление», «управление через телеграм», or edge marker `gup`/`vc`.
 Every remote question is also shown in the current text chat.
 
+
+## Ожидание GitLab и GitHub
+
+Плагин содержит автономные `scripts/ci-track.cjs` и `scripts/ci-status.cjs`
+и навык `human4ai-ci`. Первая команда запускает фоновое ожидание pipeline/run
+или job, вторая ждёт сохранённый результат до 300000 мс либо без ограничения
+с `--infinite`. При `in_progress` повторять длительное ожидание до итога.
+Нужны Node.js 18+ и авторизованный `glab`/`gh` для хоста из URL.
