@@ -62,8 +62,8 @@ async function observe(options) {
   const key = `${projectId}/${pipelineId}`; if (seen.has(key)) return; seen.add(key); if (seen.size > 200) throw Error('Too many downstream pipelines');
   const p = await api(options, projectId, `pipelines/${pipelineId}`);
   if (['failed','canceled','manual','blocked'].includes(p.status)) {
-   if (!scope) { blocker = blocker || normalized(p.status); return; }
-   scope.blocker = scope.blocker || normalized(p.status);
+   if (!scope) { blocker = blocker || normalized(p.status); if (!options.jobName && !jobId) return; }
+   else scope.blocker = scope.blocker || normalized(p.status);
   }
   if (directJob && String(projectId) === String(project) && Number(pipelineId) === Number(pipeline)) directJob.ownerPipelineStatus = p.status;
   if (!end.has(p.status)) pending = true;
@@ -84,14 +84,21 @@ async function observe(options) {
  }
  await visit(project, pipeline);
  for (const scope of optionalScopes) if (scope.found && scope.blocker) blocker = blocker || scope.blocker;
- if (blocker) return { status: blocker, message: 'Pipeline or required dependency stopped' };
+ if (!options.jobName && !jobId && blocker) return { status: blocker, message: 'Pipeline or required dependency stopped' };
  if (!options.jobName && !jobId) {
   const p = await api(options, project, `pipelines/${pipeline}`); return { status: pending ? 'in_progress' : end.has(p.status) ? normalized(p.status) : 'in_progress' };
  }
  if (found.length) {
   found.sort((a,b) => Number(b.id)-Number(a.id)); const job = found[0];
-  return { status: end.has(job.status) ? normalized(job.status) : job.ownerPipelineStatus === 'success' ? 'failed' : 'in_progress', job: { id: job.id, name: job.name, status: job.status } };
+  const active = ['running','pending'].includes(job.status);
+  let status = 'in_progress';
+  if (end.has(job.status)) status = normalized(job.status);
+  else if (['canceled','manual','blocked'].includes(job.ownerPipelineStatus)) status = normalized(job.ownerPipelineStatus);
+  else if (blocker && !(blocker === 'failed' && active)) status = blocker;
+  else if (end.has(job.ownerPipelineStatus) && !active) status = 'failed';
+  return { status, job: { id: job.id, name: job.name, status: job.status } };
  }
+ if (blocker) return { status: blocker, message: 'Pipeline or required dependency stopped' };
  return pending ? { status: 'in_progress' } : { status: 'failed', message: 'Target job was not found' };
 }
 async function main() {
