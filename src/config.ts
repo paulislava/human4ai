@@ -79,6 +79,8 @@ export const config = {
     yandexToken: process.env.VOICE_YANDEX_TOKEN ?? '',
     /** Колонка по умолчанию: номер, имя или device_id. */
     station: process.env.VOICE_STATION ?? '',
+    /** Имя получателя голосовых вопросов. */
+    recipientName: process.env.VOICE_RECIPIENT_NAME ?? 'Павел',
     /** Подписи колонок: «device_id:имя, device_id:имя». */
     stationNames: process.env.VOICE_STATION_NAMES ?? '',
     /** Статический список станций: «device_id:host:port:platform:имя, …». */

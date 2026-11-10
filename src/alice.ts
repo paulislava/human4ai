@@ -2,7 +2,7 @@ import crypto from 'node:crypto';
 import { Request, Response, Router } from 'express';
 import { Ask, AskService, AskStore } from './asks';
 import { config } from './config';
-import { clean } from './voice/voice.service';
+import { VoiceService } from './voice/voice.service';
 
 /**
  * Вебхук приватного навыка Алисы «Мой код» — голосовая половина вопросов человеку.
@@ -50,11 +50,10 @@ function reply(text: string, endSession = false) {
   };
 }
 
-/** «NoSmoke спрашивает: мержить MR 42? Варианты: да, нет.» */
+const voice = new VoiceService();
+
 function describe(ask: Ask, prefix = ''): string {
-  const who = ask.context?.trim() || ask.client || 'Клод';
-  const options = ask.options.length ? ` Варианты: ${ask.options.join(', ')}.` : '';
-  return `${prefix}${who} спрашивает: ${clean(ask.question)}${options}`;
+  return `${prefix}${voice.phrase(ask)}`;
 }
 
 function sameSecret(got: string): boolean {

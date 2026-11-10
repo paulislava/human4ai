@@ -114,10 +114,10 @@ function utterance(text: string, extra: Record<string, unknown> = {}) {
 }
 
 describe('голосовой канал', () => {
-  it('представляет вопрос как вопрос из human for ai без подсказок', () => {
+  it('обращается к получателю перед вопросом', () => {
     const phrase = new VoiceService().phrase({ question: 'Продолжать?' });
 
-    expect(phrase).toBe('Вопрос из human for ai. Продолжать?');
+    expect(phrase).toBe('Павел, Продолжать?');
   });
 
   it('озвучивает только первый вопрос очереди', async () => {
@@ -293,6 +293,20 @@ describe('вебхук навыка Алисы', () => {
     const res = await callJson(app, 'POST', `/alice/${SECRET}`, utterance('ответь коду повтори'));
     expect(res.body.response.text).toContain('что дальше?');
     expect(setup.store.get(ask.id)!.status).toBe('pending');
+  });
+
+  it('«повтори» читает варианты с настроенным именем без вопроса и контекста', async () => {
+    const previous = config.voice.recipientName;
+    config.voice.recipientName = ' Анна ';
+    try {
+      const setup = makeSetup();
+      const ask = setup.service.create({ client: 'alpha', channel: 'voice', question: 'Что выбрать?', context: 'Контекст', options: ['персик', 'яблоко'] });
+      const res = await callJson(makeApp(setup), 'POST', `/alice/${SECRET}`, utterance('повтори'));
+      expect(res.body.response.text).toBe('Анна, вариант 1: персик, вариант 2: яблоко');
+      expect(setup.store.get(ask.id)!.status).toBe('pending');
+    } finally {
+      config.voice.recipientName = previous;
+    }
   });
 
   it('«сколько вопросов» считает очередь', async () => {

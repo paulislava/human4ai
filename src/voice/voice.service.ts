@@ -30,7 +30,7 @@ export class VoiceService {
     return stations();
   }
 
-  /** Фраза для колонки: короткое представление источника и сам вопрос. */
+  /** Фраза для колонки: обращение и вопрос или варианты ответа. */
   phrase(input: {
     question: string;
     client?: string | null;
@@ -38,11 +38,11 @@ export class VoiceService {
     options?: string[];
     queueLength?: number;
   }): string {
-    const parts = ['Вопрос из human for ai.', clean(input.question)];
-
-    if (input.options?.length) parts.push(`Варианты: ${input.options.join(', ')}.`);
-
-    return parts.join(' ');
+    const recipient = clean(config.voice.recipientName) || 'Павел';
+    const content = input.options?.length
+      ? input.options.map((option, index) => `вариант ${index + 1}: ${clean(option)}`).join(', ')
+      : clean(input.question);
+    return `${recipient}, ${content}`;
   }
 
   /**
