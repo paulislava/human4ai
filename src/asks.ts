@@ -170,8 +170,10 @@ export class AskStore {
 
   byTelegramMessage(messageId: number): Ask | null {
     const row = this.db
-      .prepare('SELECT * FROM asks WHERE telegram_message_id = ?')
-      .get(messageId) as AskRow | undefined;
+      .prepare(
+        'SELECT * FROM asks WHERE telegram_message_id = ? OR telegram_anchor_message_id = ?',
+      )
+      .get(messageId, messageId) as AskRow | undefined;
     return row ? toAsk(row) : null;
   }
 
@@ -506,7 +508,7 @@ export class AskService {
    *      правим в «✅ Ответ принят» (сообщение с `force_reply` Bot API править
    *      не позволяет);
    *   2) под ним, реплаем (то есть в треде), — приглашение с `force_reply` или
-   *      опрос с вариантами. Ответ Павла привязывается к нему, как и раньше.
+   *      опрос с вариантами. Реплай принимается на заголовок и приглашение.
    */
   private async sendToTelegram(ask: Ask): Promise<void> {
     // В группе с топиками каждый вопрос получает свою ветку — в личке Telegram

@@ -48,6 +48,54 @@ function makeService(timeoutMs = 5_000) {
 const flush = () => new Promise((resolve) => setTimeout(resolve, 10));
 
 describe('AskService', () => {
+  it.each(['text', 'secret', 'code'] as const)(
+    'принимает %s ответ на заголовок вопроса',
+    async (kind) => {
+      const { store, service } = makeService();
+      const ask = service.create({ client: 'test', kind, question: 'Значение?' });
+      const running = service.run(ask.id);
+      await flush();
+
+      try {
+        const sent = store.get(ask.id)!;
+        expect(sent.telegramAnchorMessageId).not.toBe(sent.telegramMessageId);
+        expect(service.handleReply(sent.telegramAnchorMessageId!, '  тестовый ответ  ', 500)).toBe(true);
+        expect(await running).toMatchObject({ status: 'answered', answer: 'тестовый ответ' });
+        expect(store.get(ask.id)!.telegramReplyMessageId).toBe(500);
+      } finally {
+        service.cancel(ask.id);
+        await running;
+      }
+    },
+  );
+
+  it('после retry принимает только сообщения текущей попытки', async () => {
+    const { store, service } = makeService();
+    const ask = service.create({ client: 'test', question: 'Значение?' });
+    const firstRun = service.run(ask.id);
+    await flush();
+    const first = store.get(ask.id)!;
+    service.handleReply(first.telegramMessageId!, 'первый ответ', 500);
+    await firstRun;
+
+    const retryRun = service.retry(ask.id);
+    await flush();
+    try {
+      const current = store.get(ask.id)!;
+      expect(current.telegramAnchorMessageId).not.toBe(first.telegramAnchorMessageId);
+      expect(current.telegramMessageId).not.toBe(first.telegramMessageId);
+      expect(service.handleReply(first.telegramAnchorMessageId!, 'старый заголовок', 501)).toBe(false);
+      expect(service.handleReply(first.telegramMessageId!, 'старое приглашение', 502)).toBe(false);
+      expect(service.handleReply(999_999, 'чужое сообщение', 503)).toBe(false);
+      expect(store.get(ask.id)).toMatchObject({ status: 'pending', answer: null });
+      expect(service.handleReply(current.telegramAnchorMessageId!, 'новый ответ', 504)).toBe(true);
+      expect(await retryRun).toMatchObject({ status: 'answered', answer: 'новый ответ' });
+    } finally {
+      service.cancel(ask.id);
+      await retryRun;
+    }
+  });
+
   it('отдаёт ответ, пришедший реплаем на свой вопрос', async () => {
     const { store, service } = makeService();
     const ask = service.create({ client: 'test', question: 'Токен от BotFather?' });

@@ -1,14 +1,20 @@
 import axios from 'axios';
+import { SocksProxyAgent } from 'socks-proxy-agent';
 import { config } from './config';
 
 /**
  * Общие настройки запросов к Bot API. Прокси задаётся одной переменной
- * (TELEGRAM_PROXY): из RU-сети api.telegram.org недоступен, а axios умеет
- * CONNECT сам — отдельный агент для этого не нужен.
+ * (TELEGRAM_PROXY). Для SOCKS нужен отдельный агент; HTTP/HTTPS обрабатывает axios.
  */
 function requestOptions<T extends object>(options: T): T {
   const proxy = config.telegram.proxy;
   if (!proxy.url) return options;
+
+  const protocol = new URL(proxy.url).protocol;
+  if (protocol === 'socks5:' || protocol === 'socks5h:') {
+    const agent = new SocksProxyAgent(proxy.url);
+    return { ...options, proxy: false, httpAgent: agent, httpsAgent: agent } as T;
+  }
 
   return {
     ...options,
@@ -75,6 +81,8 @@ export const REACTIONS = {
 export class TelegramClient {
   private offset = 0;
   private polling = false;
+  private pollingGeneration = 0;
+  private pollController: AbortController | null = null;
   /** Кэш «чат — супергруппа-форум»: тип чата не меняется. */
   private forum: boolean | null = null;
   /** Темы в этом чате недоступны — не дёргаем createForumTopic на каждый вопрос. */
@@ -226,22 +234,16 @@ export class TelegramClient {
       return;
     }
     this.polling = true;
+    const generation = ++this.pollingGeneration;
 
     const loop = async (): Promise<void> => {
-      while (this.polling) {
+      while (this.polling && generation === this.pollingGeneration) {
         try {
-          const response = await axios.get(`${this.apiUrl()}/getUpdates`, requestOptions({
-            params: {
-              offset: this.offset,
-              timeout: 30,
-              // poll_answer нужен для вопросов с вариантами: выбор в опросе
-              // приходит отдельным типом обновления, а не сообщением.
-              allowed_updates: ['message', 'poll_answer'],
-            },
-            timeout: 40_000,
-          }));
+          const response = await this.getUpdates();
+          if (!this.polling || generation !== this.pollingGeneration) break;
 
           for (const update of response.data?.result ?? []) {
+            if (!this.polling || generation !== this.pollingGeneration) break;
             this.offset = update.update_id + 1;
 
             const pollAnswer = update.poll_answer;
@@ -266,6 +268,7 @@ export class TelegramClient {
             }
           }
         } catch (error) {
+          if (!this.polling || generation !== this.pollingGeneration) break;
           // Сеть моргнула — ждём и продолжаем: обрыв polling молча оставил бы
           // все ожидающие задачи без ответов.
           console.error('Telegram polling:', (error as Error).message);
@@ -279,6 +282,28 @@ export class TelegramClient {
 
   stopPolling(): void {
     this.polling = false;
+    this.pollController?.abort();
+  }
+
+  private async getUpdates() {
+    const controller = new AbortController();
+    this.pollController = controller;
+    // Axios timeout не ограничивает все этапы соединения с прокси.
+    const deadline = setTimeout(() => controller.abort(), 40_000);
+    try {
+      return await axios.get(`${this.apiUrl()}/getUpdates`, requestOptions({
+        params: {
+          offset: this.offset,
+          timeout: 30,
+          allowed_updates: ['message', 'poll_answer'],
+        },
+        timeout: 40_000,
+        signal: controller.signal,
+      }));
+    } finally {
+      clearTimeout(deadline);
+      if (this.pollController === controller) this.pollController = null;
+    }
   }
 
   /**
