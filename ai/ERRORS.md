@@ -89,3 +89,32 @@ GitLab job, если соседняя проверка уже упала в ро
 `plugins/human4ai-control/scripts/test/ci-worker-gitlab-target.test.cjs`,
 26 тестов CLI и независимое ревью. После локальной установки реальная
 успешная job `29831564` в failed pipeline `5115449` распознана как `success`.
+
+
+## Docker CMS блокировал исходящие соединения Human4AI
+
+2026-11-17 вопрос `ask_d9c7023bc59349d0a699` завершился `failed` с
+`Proxy connection timed out`. Подключение к SOCKS5 работало с Windows и WSL,
+но из контейнера истекало по таймауту. В filter отсутствовали правила моста
+`br-40eddf6c6cc4`, а политика FORWARD оставалась DROP. MASQUERADE сохранился.
+Временные разрешения только app-контейнер → SOCKS5 и установленного обратного
+трафика восстановили `getMe` за 444 мс, подтвердив место блокировки.
+
+Human4AI и CMS имели одинаковые netns и boot ID. Docker CMS стартовал в 01:22
+после Docker Human4AI в 00:01, управлял iptables по умолчанию и оставил цепочки
+только для docker0, хотя его контейнер использовал host network. Это соответствует
+[конфликту нескольких Docker daemon](https://docs.docker.com/reference/cli/dockerd/#run-multiple-daemons).
+
+Решение: Docker CMS переведён в host-only режим без управления bridge, iptables,
+ip6tables и ip-forward; остальные поля конфигурации сохранены. Старый CMS Docker
+остановлен, штатные правила восстановлены перезапуском Docker Human4AI через
+его SCM lifecycle. Временные правила удалены, FORWARD DROP сохранён. После нового
+запуска CMS и сайта все IPv4 filter/NAT правила Human4AI совпали с baseline.
+Telegram `getWebhookInfo` успешен, backlog 0; контрольный вопрос через MCP получил
+ответ, подтверждение REST вернуло 200. Значение ответа в журнал не внесено.
+
+Проверки: `dockerd --validate`, `bash -n`, объединение JSON с сохранением data-root,
+отказ валидации без замены файла; независимое ревью. Новые автоматические тесты
+не добавлялись по исключению для операционных настроек. Human4AI health 200,
+CMS health 204, сайт 200, S3 LAN health 200. Службы восстановлены через SCM;
+проверенные копии SQLite и PostgreSQL сохранены на ПК и Mac; исходные правила — на ПК.

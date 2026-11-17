@@ -59,3 +59,19 @@ Enterprise с выбором хоста по URL через настроенны
 tracker не должны оставлять вечное ожидание.
 
 Проверка CLI: `npm test -- --runInBand src/ci-tracker-cli.spec.ts`.
+
+
+## Общая сеть Docker в WSL
+
+В текущей установке Human4AI и PaulislavaCMS используют одно сетевое пространство
+WSL. Docker Human4AI обслуживает bridge-сеть `human4ai` и сохраняет штатное
+управление iptables. Docker CMS обслуживает только host-network контейнер:
+его `daemon.json` должен содержать `bridge: "none"`, `iptables: false`,
+`ip6tables: false`, `ip-forward: false`. Иначе запуск CMS Docker может заменить
+общие цепочки и заблокировать исходящие соединения Human4AI.
+
+При восстановлении сначала остановить старый управляющий firewall Docker CMS,
+затем восстановить правила через Docker Human4AI. После запуска CMS повторно
+проверить сохранность filter/NAT и запрос к Telegram из контейнера. Сохранять
+`FORWARD DROP`; временные диагностические разрешения удалять после восстановления.
+Подробности: [инцидент](ai/ERRORS.md#docker-cms-блокировал-исходящие-соединения-human4ai).
